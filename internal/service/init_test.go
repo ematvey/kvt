@@ -196,6 +196,21 @@ func TestInitAdoptionRejectsInvalidMarkdownPaths(t *testing.T) {
 	}
 }
 
+func TestInitAdoptionRejectsInvalidNestedIndexPath(t *testing.T) {
+	testutil.RequireGit(t)
+	root := t.TempDir()
+	runGit(t, root, "init", "-b", "trunk")
+	runGit(t, root, "config", "user.name", "test")
+	runGit(t, root, "config", "user.email", "test@example.com")
+	writeFile(t, filepath.Join(root, "People", "index.md"), "---\ntype: Index\n---\n# People\n")
+	runGit(t, root, "add", ".")
+	runGit(t, root, "commit", "-m", "seed")
+
+	if _, err := Init(t.Context(), InitRequest{VaultPath: root, Defaults: true}); err == nil || !strings.Contains(err.Error(), "People/index.md") {
+		t.Fatalf("Init err = %v", err)
+	}
+}
+
 func TestInitIsIdempotent(t *testing.T) {
 	testutil.RequireGit(t)
 	root := t.TempDir()

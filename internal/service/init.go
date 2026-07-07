@@ -259,7 +259,7 @@ func existingMarkdownPaths(root string) ([]pathutil.Path, error) {
 			}
 			return nil
 		}
-		if filepath.Ext(d.Name()) != ".md" || d.Name() == "index.md" {
+		if filepath.Ext(d.Name()) != ".md" {
 			return nil
 		}
 		rel, err := filepath.Rel(root, filePath)
@@ -269,6 +269,9 @@ func existingMarkdownPaths(root string) ([]pathutil.Path, error) {
 		normalized, err := pathutil.Normalize(filepath.ToSlash(rel))
 		if err != nil {
 			return fmt.Errorf("invalid markdown path %q: %w", filepath.ToSlash(rel), err)
+		}
+		if d.Name() == "index.md" {
+			return nil
 		}
 		paths = append(paths, normalized)
 		return nil
