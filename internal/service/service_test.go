@@ -364,6 +364,84 @@ func TestEnqueuePendingEmbeddingsDoesNotDropBacklogBeyondQueueCapacity(t *testin
 	}
 }
 
+func TestRunEmbeddingWorkerFailsEmptyChunkJobs(t *testing.T) {
+	db := openTempDBForServiceTest(t)
+	svc := &Service{
+		index:      db,
+		embedder:   stubServiceEmbedder{vectors: [][]float32{}},
+		embedQueue: make(chan embeddingJob, 1),
+	}
+	if err := db.ApplyDocument(t.Context(), index.IndexedDocument{
+		Path:      "notes/empty.md",
+		Hash:      "h1",
+		Title:     "Empty",
+		Type:      "Note",
+		Timestamp: "2026-07-07T12:00:00Z",
+		Chunks: []index.Chunk{
+			{Ordinal: 0, Text: ""},
+		},
+	}); err != nil {
+		t.Fatalf("ApplyDocument: %v", err)
+	}
+
+	svc.embedQueue <- embeddingJob{
+		path:      "notes/empty.md",
+		timestamp: "2026-07-07T12:00:00Z",
+		chunks:    []index.Chunk{{Ordinal: 0, Text: ""}},
+	}
+	close(svc.embedQueue)
+	svc.runEmbeddingWorker()
+
+	summary, err := db.Summary(t.Context(), index.SummaryRequest{})
+	if err != nil {
+		t.Fatalf("Summary: %v", err)
+	}
+	if summary.EmbeddingFailedCount != 1 {
+		t.Fatalf("failed count = %d", summary.EmbeddingFailedCount)
+	}
+}
+
+func TestRunEmbeddingWorkerFailsPartiallyEmbeddableJobs(t *testing.T) {
+	db := openTempDBForServiceTest(t)
+	svc := &Service{
+		index:      db,
+		embedder:   stubServiceEmbedder{vectors: [][]float32{{1, 0}}},
+		embedQueue: make(chan embeddingJob, 1),
+	}
+	if err := db.ApplyDocument(t.Context(), index.IndexedDocument{
+		Path:      "notes/mixed.md",
+		Hash:      "h1",
+		Title:     "Mixed",
+		Type:      "Note",
+		Timestamp: "2026-07-07T12:00:00Z",
+		Chunks: []index.Chunk{
+			{Ordinal: 0, Text: "body"},
+			{Ordinal: 1, Text: ""},
+		},
+	}); err != nil {
+		t.Fatalf("ApplyDocument: %v", err)
+	}
+
+	svc.embedQueue <- embeddingJob{
+		path:      "notes/mixed.md",
+		timestamp: "2026-07-07T12:00:00Z",
+		chunks: []index.Chunk{
+			{Ordinal: 0, Text: "body"},
+			{Ordinal: 1, Text: ""},
+		},
+	}
+	close(svc.embedQueue)
+	svc.runEmbeddingWorker()
+
+	summary, err := db.Summary(t.Context(), index.SummaryRequest{})
+	if err != nil {
+		t.Fatalf("Summary: %v", err)
+	}
+	if summary.EmbeddingFailedCount != 1 {
+		t.Fatalf("failed count = %d", summary.EmbeddingFailedCount)
+	}
+}
+
 func TestEmbedWithRetriesRetriesTransientFailures(t *testing.T) {
 	embedder := &flakyServiceEmbedder{
 		failures: 2,
@@ -580,6 +658,18 @@ func (f *flakyServiceEmbedder) Embed(_ context.Context, texts []string) ([][]flo
 	return vectors, nil
 }
 
+type stubServiceEmbedder struct {
+	vectors [][]float32
+	err     error
+}
+
+func (s stubServiceEmbedder) Embed(context.Context, []string) ([][]float32, error) {
+	if s.err != nil {
+		return nil, s.err
+	}
+	return s.vectors, nil
+}
+
 type waitingEmbedder struct {
 	started chan struct{}
 }
@@ -609,6 +699,21 @@ func forceVectorAvailableForTest(t *testing.T, db *index.DB) {
 	`); err != nil {
 		t.Fatalf("create fake kb_vec: %v", err)
 	}
+}
+
+func openTempDBForServiceTest(t *testing.T) *index.DB {
+	t.Helper()
+	db, err := index.Open(filepath.Join(t.TempDir(), "index.db"), index.Options{})
+	if err != nil {
+		t.Fatalf("Open index: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Fatalf("Close index: %v", err)
+		}
+	})
+	forceVectorAvailableForTest(t, db)
+	return db
 }
 
 func newServiceHarness(t *testing.T) serviceHarness {

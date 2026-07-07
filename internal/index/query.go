@@ -338,7 +338,7 @@ func (db *DB) UpsertEmbeddings(ctx context.Context, docPath string, chunks []Chu
 		return ErrVectorUnavailable
 	}
 	if len(chunks) == 0 {
-		return nil
+		return fmt.Errorf("embedding payload is empty")
 	}
 	expectedTimestamp := strings.TrimSpace(chunks[0].UpdatedAt)
 	if expectedTimestamp == "" {

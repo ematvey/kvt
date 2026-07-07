@@ -334,6 +334,54 @@ func TestRefreshVectorProvenanceClearsOrphanVectorRows(t *testing.T) {
 	}
 }
 
+func TestRefreshVectorProvenanceBackfillsMissingEmbeddingRows(t *testing.T) {
+	db := openTempDB(t)
+	createFakeVectorTable(t, db)
+	db.vecAvailable = true
+	if _, err := db.sql.Exec(`DELETE FROM kb_doc_embeddings`); err != nil {
+		t.Fatalf("delete embedding rows: %v", err)
+	}
+
+	if err := db.refreshVectorProvenance(t.Context(), Options{EnableVector: true, VectorDimension: 2, VectorModel: "test-model"}); err != nil {
+		t.Fatalf("refreshVectorProvenance: %v", err)
+	}
+
+	summary, err := db.Summary(t.Context(), SummaryRequest{})
+	if err != nil {
+		t.Fatalf("Summary: %v", err)
+	}
+	if summary.EmbeddingPendingCount != 0 {
+		t.Fatalf("pending count before docs = %d", summary.EmbeddingPendingCount)
+	}
+
+	if err := db.ApplyDocument(t.Context(), IndexedDocument{
+		Path:      "people/alice.md",
+		Hash:      "h1",
+		Title:     "Alice",
+		Type:      "Person",
+		Timestamp: "2026-07-07T12:00:00Z",
+		Chunks: []Chunk{
+			{Ordinal: 0, Text: "body"},
+		},
+	}); err != nil {
+		t.Fatalf("ApplyDocument: %v", err)
+	}
+	if _, err := db.sql.Exec(`DELETE FROM kb_doc_embeddings`); err != nil {
+		t.Fatalf("delete embedding rows after apply: %v", err)
+	}
+
+	if err := db.refreshVectorProvenance(t.Context(), Options{EnableVector: true, VectorDimension: 2, VectorModel: "test-model"}); err != nil {
+		t.Fatalf("refreshVectorProvenance second: %v", err)
+	}
+	pending, err := db.PendingEmbeddingDocuments(t.Context(), false)
+	if err != nil {
+		t.Fatalf("PendingEmbeddingDocuments: %v", err)
+	}
+	if len(pending) != 1 || pending[0].Path != "people/alice.md" {
+		t.Fatalf("pending = %#v", pending)
+	}
+}
+
 func TestUpsertEmbeddingsRejectsStaleDocumentTimestamp(t *testing.T) {
 	db := openTempDB(t)
 	createFakeVectorTable(t, db)
@@ -394,6 +442,16 @@ func TestUpsertEmbeddingsRejectsEmptyVectors(t *testing.T) {
 	}
 	if got := fakeVectorRowCount(t, db, "people/alice.md"); got != 0 {
 		t.Fatalf("alice vector rows = %d", got)
+	}
+}
+
+func TestUpsertEmbeddingsRejectsEmptyPayload(t *testing.T) {
+	db := openTempDB(t)
+	createFakeVectorTable(t, db)
+	db.vecAvailable = true
+	err := db.UpsertEmbeddings(t.Context(), "people/alice.md", nil)
+	if err == nil {
+		t.Fatalf("expected empty embedding payload error")
 	}
 }
 

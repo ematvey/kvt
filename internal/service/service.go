@@ -417,13 +417,20 @@ func (s *Service) runEmbeddingWorker() {
 				text = strings.TrimSpace(chunk.Text)
 			}
 			if text == "" {
-				continue
+				_ = s.index.MarkEmbeddingState(context.Background(), job.path, "failed", "empty chunk text", job.timestamp)
+				break
 			}
 			texts = append(texts, text)
 			ordinals = append(ordinals, chunk.Ordinal)
 		}
+		if len(texts) != len(job.chunks) {
+			if len(texts) != 0 {
+				_ = s.index.MarkEmbeddingState(context.Background(), job.path, "failed", "embedding job has empty chunk text", job.timestamp)
+			}
+			continue
+		}
 		if len(texts) == 0 {
-			_ = s.index.MarkEmbeddingState(context.Background(), job.path, "ready", "", job.timestamp)
+			_ = s.index.MarkEmbeddingState(context.Background(), job.path, "failed", "embedding job has no chunks", job.timestamp)
 			continue
 		}
 		vectors, err := s.embedWithRetries(context.Background(), texts)

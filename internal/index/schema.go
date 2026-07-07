@@ -145,6 +145,9 @@ func vectorTableStatement(dimension int) (string, error) {
 }
 
 func (db *DB) refreshVectorProvenance(ctx context.Context, opts Options) error {
+	if err := db.backfillEmbeddingRows(ctx); err != nil {
+		return err
+	}
 	changed, err := db.vectorProvenanceChanged(ctx, opts)
 	if err != nil {
 		return err
@@ -177,6 +180,18 @@ func (db *DB) refreshVectorProvenance(ctx context.Context, opts Options) error {
 		return err
 	}
 	return db.setMeta(ctx, "embedder_dimensions", strconv.Itoa(opts.VectorDimension))
+}
+
+func (db *DB) backfillEmbeddingRows(ctx context.Context) error {
+	_, err := db.sql.ExecContext(ctx, `
+		INSERT INTO kb_doc_embeddings(path, state, last_error, updated_at)
+		SELECT d.path, 'pending', '', d.timestamp
+		FROM kb_docs d
+		WHERE NOT EXISTS (
+			SELECT 1 FROM kb_doc_embeddings e WHERE e.path = d.path
+		)
+	`)
+	return err
 }
 
 func (db *DB) hasDisabledCurrentEmbeddings(ctx context.Context) (bool, error) {
