@@ -26,6 +26,9 @@ func TestOpenAICompatibleEmbedsTexts(t *testing.T) {
 		if !reflect.DeepEqual(req["input"], []any{"alpha", "beta"}) {
 			t.Fatalf("input = %#v", req["input"])
 		}
+		if req["dimensions"] != float64(2) {
+			t.Fatalf("dimensions = %#v", req["dimensions"])
+		}
 
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"data": []map[string]any{

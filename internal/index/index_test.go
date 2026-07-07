@@ -234,6 +234,49 @@ func TestVectorProvenanceChangeClearsVectorsAndMarksPending(t *testing.T) {
 	}
 }
 
+func TestRefreshVectorProvenanceTreatsDisabledEmbeddingsAsDirty(t *testing.T) {
+	db := openTempDB(t)
+	createFakeVectorTable(t, db)
+	db.vecAvailable = true
+	if err := db.setMeta(t.Context(), "embedder_model", "same-model"); err != nil {
+		t.Fatalf("set model: %v", err)
+	}
+	if err := db.setMeta(t.Context(), "embedder_dimensions", "2"); err != nil {
+		t.Fatalf("set dimensions: %v", err)
+	}
+	if err := db.ApplyDocument(t.Context(), IndexedDocument{
+		Path:      "people/alice.md",
+		Hash:      "h1",
+		Title:     "Alice",
+		Type:      "Person",
+		Timestamp: "2026-07-07T12:00:00Z",
+		Chunks: []Chunk{
+			{Ordinal: 0, Text: "body"},
+		},
+	}); err != nil {
+		t.Fatalf("ApplyDocument: %v", err)
+	}
+	insertFakeVectorRow(t, db, "people/alice.md", 0)
+	if err := db.MarkEmbeddingState(t.Context(), "people/alice.md", "disabled", "", "2026-07-07T12:00:00Z"); err != nil {
+		t.Fatalf("MarkEmbeddingState: %v", err)
+	}
+
+	if err := db.refreshVectorProvenance(t.Context(), Options{EnableVector: true, VectorDimension: 2, VectorModel: "same-model"}); err != nil {
+		t.Fatalf("refreshVectorProvenance: %v", err)
+	}
+
+	if got := fakeVectorRowCount(t, db, "people/alice.md"); got != 0 {
+		t.Fatalf("alice vector rows = %d", got)
+	}
+	summary, err := db.Summary(t.Context(), SummaryRequest{})
+	if err != nil {
+		t.Fatalf("Summary: %v", err)
+	}
+	if summary.EmbeddingPendingCount != 1 {
+		t.Fatalf("pending count = %d", summary.EmbeddingPendingCount)
+	}
+}
+
 func TestUpsertEmbeddingsRejectsStaleDocumentTimestamp(t *testing.T) {
 	db := openTempDB(t)
 	createFakeVectorTable(t, db)

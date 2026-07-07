@@ -279,6 +279,43 @@ func TestReconcileQueuesAppliedDocumentsForEmbedding(t *testing.T) {
 	}
 }
 
+func TestServiceStartupQueuesPendingEmbeddings(t *testing.T) {
+	testutil.RequireGit(t)
+	h := newServiceHarness(t)
+	writeFile(t, filepath.Join(h.root, "notes", "pending.md"), "---\ntype: Note\ntitle: Pending\n---\nBody\n")
+	result, err := h.service.Reconcile(t.Context())
+	if err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	if len(result.AppliedDocuments) != 1 {
+		t.Fatalf("applied documents = %#v", result.AppliedDocuments)
+	}
+	if err := h.service.index.MarkEmbeddingState(t.Context(), "notes/pending.md", "pending", "", result.AppliedDocuments[0].Timestamp); err != nil {
+		t.Fatalf("MarkEmbeddingState: %v", err)
+	}
+
+	restarted, err := New(h.root, h.service.cfg, Deps{
+		Now:      h.service.now,
+		Embedder: waitingEmbedder{started: make(chan struct{})},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	restarted.embedQueue = make(chan embeddingJob, 1)
+	if err := restarted.enqueuePendingEmbeddings(t.Context()); err != nil {
+		t.Fatalf("enqueuePendingEmbeddings: %v", err)
+	}
+
+	select {
+	case job := <-restarted.embedQueue:
+		if job.path != "notes/pending.md" || len(job.chunks) == 0 {
+			t.Fatalf("job = %#v", job)
+		}
+	default:
+		t.Fatalf("expected pending embedding job")
+	}
+}
+
 func TestEmbedWithRetriesRetriesTransientFailures(t *testing.T) {
 	embedder := &flakyServiceEmbedder{
 		failures: 2,
@@ -493,6 +530,17 @@ func (f *flakyServiceEmbedder) Embed(_ context.Context, texts []string) ([][]flo
 		vectors = append(vectors, append([]float32(nil), f.vector...))
 	}
 	return vectors, nil
+}
+
+type waitingEmbedder struct {
+	started chan struct{}
+}
+
+func (w waitingEmbedder) Embed(context.Context, []string) ([][]float32, error) {
+	if w.started != nil {
+		close(w.started)
+	}
+	select {}
 }
 
 func newServiceHarness(t *testing.T) serviceHarness {

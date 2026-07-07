@@ -118,6 +118,10 @@ func New(root string, cfg config.Config, deps Deps) (*Service, error) {
 	}
 	if embedder != nil && indexDB.VectorAvailable() {
 		svc.embedQueue = make(chan embeddingJob, 64)
+		if err := svc.enqueuePendingEmbeddings(context.Background()); err != nil {
+			_ = indexDB.Close()
+			return nil, err
+		}
 		go svc.runEmbeddingWorker()
 	}
 	return svc, nil
@@ -372,6 +376,29 @@ func (s *Service) enqueueIndexedEmbedding(doc index.IndexedDocument) {
 	default:
 		_ = s.index.MarkEmbeddingState(context.Background(), doc.Path, "failed", "embedding queue full", doc.Timestamp)
 	}
+}
+
+func (s *Service) enqueuePendingEmbeddings(ctx context.Context) error {
+	if s.embedQueue == nil {
+		return nil
+	}
+	documents, err := s.index.PendingEmbeddingDocuments(ctx, true)
+	if err != nil {
+		return err
+	}
+	for _, doc := range documents {
+		job := embeddingJob{
+			path:      doc.Path,
+			timestamp: doc.Timestamp,
+			chunks:    append([]index.Chunk(nil), doc.Chunks...),
+		}
+		select {
+		case s.embedQueue <- job:
+		default:
+			_ = s.index.MarkEmbeddingState(context.Background(), doc.Path, "failed", "embedding queue full", doc.Timestamp)
+		}
+	}
+	return nil
 }
 
 func (s *Service) runEmbeddingWorker() {

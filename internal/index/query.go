@@ -66,6 +66,12 @@ type ChunkEmbedding struct {
 	UpdatedAt string
 }
 
+type EmbeddingJobDocument struct {
+	Path      string
+	Timestamp string
+	Chunks    []Chunk
+}
+
 type GrepMatch struct {
 	Path    string
 	Ordinal int
@@ -376,6 +382,57 @@ func (db *DB) UpsertEmbeddings(ctx context.Context, docPath string, chunks []Chu
 		}
 	}
 	return tx.Commit()
+}
+
+func (db *DB) PendingEmbeddingDocuments(ctx context.Context, includeFailed bool) ([]EmbeddingJobDocument, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	states := []string{"pending"}
+	if includeFailed {
+		states = append(states, "failed")
+	}
+	placeholders := make([]string, 0, len(states))
+	args := make([]any, 0, len(states))
+	for _, state := range states {
+		placeholders = append(placeholders, "?")
+		args = append(args, state)
+	}
+	query := fmt.Sprintf(`
+		SELECT d.path, d.timestamp, c.ordinal, c.text, c.embed_text
+		FROM kb_docs d
+		JOIN kb_doc_embeddings e ON e.path = d.path AND e.updated_at = d.timestamp
+		JOIN kb_chunks c ON c.path = d.path
+		WHERE e.state IN (%s)
+		ORDER BY d.path ASC, c.ordinal ASC
+	`, strings.Join(placeholders, ", "))
+	rows, err := db.sql.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	documents := []EmbeddingJobDocument{}
+	indexByPath := map[string]int{}
+	for rows.Next() {
+		var docPath string
+		var timestamp string
+		var chunk Chunk
+		if err := rows.Scan(&docPath, &timestamp, &chunk.Ordinal, &chunk.Text, &chunk.EmbedText); err != nil {
+			return nil, err
+		}
+		idx, ok := indexByPath[docPath]
+		if !ok {
+			idx = len(documents)
+			indexByPath[docPath] = idx
+			documents = append(documents, EmbeddingJobDocument{
+				Path:      docPath,
+				Timestamp: timestamp,
+			})
+		}
+		documents[idx].Chunks = append(documents[idx].Chunks, chunk)
+	}
+	return documents, rows.Err()
 }
 
 func (db *DB) MarkEmbeddingState(ctx context.Context, docPath string, state string, lastError string, updatedAt string) error {

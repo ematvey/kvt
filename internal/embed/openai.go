@@ -41,10 +41,14 @@ func (c *openAICompatible) Embed(ctx context.Context, texts []string) ([][]float
 		return nil, &ConfigError{Message: "openai-compatible embedder model is required"}
 	}
 
-	body, err := json.Marshal(map[string]any{
+	requestBody := map[string]any{
 		"model": c.model,
 		"input": texts,
-	})
+	}
+	if c.dimensions > 0 {
+		requestBody["dimensions"] = c.dimensions
+	}
+	body, err := json.Marshal(requestBody)
 	if err != nil {
 		return nil, err
 	}

@@ -149,6 +149,12 @@ func (db *DB) refreshVectorProvenance(ctx context.Context, opts Options) error {
 	if err != nil {
 		return err
 	}
+	if !changed {
+		changed, err = db.hasDisabledCurrentEmbeddings(ctx)
+		if err != nil {
+			return err
+		}
+	}
 	if changed {
 		if _, err := db.sql.ExecContext(ctx, `DELETE FROM kb_vec`); err != nil {
 			return err
@@ -168,6 +174,19 @@ func (db *DB) refreshVectorProvenance(ctx context.Context, opts Options) error {
 		return err
 	}
 	return db.setMeta(ctx, "embedder_dimensions", strconv.Itoa(opts.VectorDimension))
+}
+
+func (db *DB) hasDisabledCurrentEmbeddings(ctx context.Context) (bool, error) {
+	var count int
+	if err := db.sql.QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM kb_doc_embeddings e
+		JOIN kb_docs d ON d.path = e.path AND d.timestamp = e.updated_at
+		WHERE e.state = 'disabled'
+	`).Scan(&count); err != nil {
+		return false, err
+	}
+	return count > 0, nil
 }
 
 func (db *DB) vectorProvenanceChanged(ctx context.Context, opts Options) (bool, error) {
