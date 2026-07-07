@@ -110,7 +110,7 @@ func ValidateDocument(schema Schema, docPath pathutil.Path, doc frontmatter.Docu
 	if docType != "" && !knownType {
 		switch unknownPolicy(schema) {
 		case UnknownReject:
-			result.Errors = append(result.Errors, Issue{Path: docPath, Field: "type", Message: fmt.Sprintf("unknown type %q", docType)})
+			addViolation(&result, mode, docPath, "type", fmt.Sprintf("unknown type %q", docType))
 		case UnknownWarn:
 			result.Warnings = append(result.Warnings, Issue{Path: docPath, Field: "type", Message: fmt.Sprintf("unknown type %q", docType)})
 		}
@@ -219,14 +219,30 @@ func ValidateVault(root string, schema Schema) (ValidationReport, error) {
 	}
 
 	for _, doc := range docs {
-		for _, target := range extractBodyLinks(doc.path, doc.doc.Body) {
-			if _, ok := docs[target]; !ok {
+		for _, link := range extractBodyLinks(doc.path, doc.doc.Body) {
+			if link.err != nil {
 				report.Errors = append(report.Errors, Issue{
 					Path:    doc.path,
 					Field:   "body",
-					Message: fmt.Sprintf("broken link to %q", target),
+					Message: link.err.Error(),
 				})
+				continue
 			}
+			if _, ok := docs[link.target]; ok {
+				continue
+			}
+			readableIndex, err := readableIndexExists(root, link.target)
+			if err != nil {
+				return ValidationReport{}, err
+			}
+			if readableIndex {
+				continue
+			}
+			report.Errors = append(report.Errors, Issue{
+				Path:    doc.path,
+				Field:   "body",
+				Message: fmt.Sprintf("broken link to %q", link.target),
+			})
 		}
 
 		typeDef, ok := schema.Types[doc.typ]
@@ -312,29 +328,42 @@ func matchRule(pattern string, candidate string) bool {
 
 var markdownLinkPattern = regexp.MustCompile(`\[[^]]+\]\(([^)]+)\)`)
 
-func extractBodyLinks(from pathutil.Path, body []byte) []pathutil.Path {
+type bodyLink struct {
+	target pathutil.Path
+	err    error
+}
+
+func extractBodyLinks(from pathutil.Path, body []byte) []bodyLink {
 	matches := markdownLinkPattern.FindAllSubmatch(body, -1)
-	links := make([]pathutil.Path, 0, len(matches))
+	links := make([]bodyLink, 0, len(matches))
 	for _, match := range matches {
 		target := strings.TrimSpace(string(match[1]))
 		if target == "" || strings.Contains(target, "://") || strings.HasPrefix(target, "#") {
 			continue
 		}
-		resolved, ok := resolveLink(from, target)
-		if ok {
-			links = append(links, resolved)
+		resolved, err := resolveBodyLink(from, target)
+		if err != nil {
+			links = append(links, bodyLink{err: err})
+			continue
 		}
+		links = append(links, bodyLink{target: resolved})
 	}
 	return links
 }
 
-func resolveLink(from pathutil.Path, raw string) (pathutil.Path, bool) {
+func resolveBodyLink(from pathutil.Path, raw string) (pathutil.Path, error) {
 	clean := raw
 	if idx := strings.IndexAny(clean, "#?"); idx >= 0 {
 		clean = clean[:idx]
 	}
 	if clean == "" {
-		return "", false
+		return "", nil
+	}
+	if strings.Contains(clean, "\\") {
+		return "", fmt.Errorf("invalid internal link %q: path must use forward slashes", raw)
+	}
+	if strings.Contains(clean, "//") {
+		return "", fmt.Errorf("invalid internal link %q: path has empty segment", raw)
 	}
 	dir := path.Dir(from.String())
 	if dir == "." {
@@ -348,7 +377,21 @@ func resolveLink(from pathutil.Path, raw string) (pathutil.Path, bool) {
 	}
 	normalized, err := pathutil.Normalize(candidate)
 	if err != nil {
-		return "", false
+		return "", err
 	}
-	return normalized, true
+	return normalized, nil
+}
+
+func readableIndexExists(root string, target pathutil.Path) (bool, error) {
+	if path.Base(target.String()) != "index.md" {
+		return false, nil
+	}
+	info, err := os.Stat(filepath.Join(root, filepath.FromSlash(target.String())))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	return !info.IsDir(), nil
 }

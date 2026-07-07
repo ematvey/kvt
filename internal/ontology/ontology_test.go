@@ -102,6 +102,92 @@ func TestValidatePathRulesAndAdvisoryMode(t *testing.T) {
 	assertIssueFields(t, unknown.Warnings, "type")
 }
 
+func TestValidateDocumentAdvisoryUsesWarningForUnknownType(t *testing.T) {
+	schema := Schema{
+		Types: map[string]TypeDef{
+			"Person": {Required: []string{"title"}},
+		},
+		UnknownTypes: UnknownReject,
+	}
+
+	p, _ := pathutil.Normalize("people/alice.md")
+	result := ValidateDocument(schema, p, frontmatter.Document{
+		Fields: map[string]any{"type": "Alien"},
+	}, Advisory)
+	if len(result.Errors) != 0 || len(result.Warnings) != 1 {
+		t.Fatalf("result = %#v", result)
+	}
+	assertIssueFields(t, result.Warnings, "type")
+}
+
+func TestValidateVaultReportsMalformedBodyLinks(t *testing.T) {
+	root := t.TempDir()
+	mustWriteFile(t, filepath.Join(root, "people", "alice.md"), ""+
+		"---\n"+
+		"type: Person\n"+
+		"title: Alice\n"+
+		"---\n"+
+		"[Bad](../Systems/DB.md)\n"+
+		"[AlsoBad](foo//bar.md)\n")
+	mustWriteFile(t, filepath.Join(root, "people", "foo", "bar.md"), ""+
+		"---\n"+
+		"type: Person\n"+
+		"title: Nested\n"+
+		"---\n"+
+		"Body\n")
+	mustWriteFile(t, filepath.Join(root, "systems", "db.md"), ""+
+		"---\n"+
+		"type: System\n"+
+		"title: DB\n"+
+		"---\n"+
+		"Body\n")
+
+	schema := Schema{
+		Types: map[string]TypeDef{
+			"Person": {Required: []string{"title"}},
+			"System": {Required: []string{"title"}},
+		},
+	}
+
+	report, err := ValidateVault(root, schema)
+	if err != nil {
+		t.Fatalf("ValidateVault: %v", err)
+	}
+	if len(report.Errors) != 2 {
+		t.Fatalf("errors = %#v", report.Errors)
+	}
+	assertIssueFields(t, report.Errors, "body")
+}
+
+func TestValidateVaultAllowsLinksToReadableIndexFiles(t *testing.T) {
+	root := t.TempDir()
+	mustWriteFile(t, filepath.Join(root, "people", "index.md"), ""+
+		"---\n"+
+		"type: Index\n"+
+		"---\n"+
+		"# people/\n")
+	mustWriteFile(t, filepath.Join(root, "people", "alice.md"), ""+
+		"---\n"+
+		"type: Person\n"+
+		"title: Alice\n"+
+		"---\n"+
+		"[People](index.md)\n")
+
+	schema := Schema{
+		Types: map[string]TypeDef{
+			"Person": {Required: []string{"title"}},
+		},
+	}
+
+	report, err := ValidateVault(root, schema)
+	if err != nil {
+		t.Fatalf("ValidateVault: %v", err)
+	}
+	if len(report.Errors) != 0 {
+		t.Fatalf("errors = %#v", report.Errors)
+	}
+}
+
 func TestValidateVaultReportsBrokenBodyLinksAndRefTargets(t *testing.T) {
 	root := t.TempDir()
 	mustWriteFile(t, filepath.Join(root, "people", "alice.md"), ""+
