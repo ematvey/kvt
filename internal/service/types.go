@@ -159,6 +159,11 @@ func (e *EditTargetNotFoundError) Error() string {
 	return fmt.Sprintf("edit target %q not found in %s", e.OldString, e.Path)
 }
 
+func IsEditTargetNotFound(err error) bool {
+	var target *EditTargetNotFoundError
+	return errors.As(err, &target)
+}
+
 type ValidationError struct {
 	Path     string
 	Errors   []ontology.Issue

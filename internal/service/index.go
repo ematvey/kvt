@@ -20,12 +20,26 @@ func (s *Service) Summary(ctx context.Context, req index.SummaryRequest) (index.
 }
 
 func (s *Service) Reconcile(ctx context.Context) (index.ReconcileResult, error) {
+	return s.reconcile(ctx, false)
+}
+
+func (s *Service) Rebuild(ctx context.Context) (index.ReconcileResult, error) {
+	return s.reconcile(ctx, true)
+}
+
+func (s *Service) reconcile(ctx context.Context, force bool) (index.ReconcileResult, error) {
 	if err := ctx.Err(); err != nil {
 		return index.ReconcileResult{}, err
 	}
 	s.writerMu.Lock()
 	defer s.writerMu.Unlock()
-	result, err := s.index.Reconcile(ctx, s.root)
+	var result index.ReconcileResult
+	var err error
+	if force {
+		result, err = s.index.Rebuild(ctx, s.root)
+	} else {
+		result, err = s.index.Reconcile(ctx, s.root)
+	}
 	if err != nil {
 		return index.ReconcileResult{}, err
 	}

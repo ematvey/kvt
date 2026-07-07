@@ -2,10 +2,15 @@ package main
 
 import (
 	"bytes"
+	"database/sql"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
+	"github.com/ematvey/kvt/internal/config"
+	"github.com/ematvey/kvt/internal/index"
 	"github.com/ematvey/kvt/internal/service"
 )
 
@@ -72,5 +77,83 @@ func TestRunValidateReturnsNonZeroWhenValidationFails(t *testing.T) {
 	}
 	if !bytes.Contains(stderr.Bytes(), []byte("missing required field")) {
 		t.Fatalf("expected validation detail in output: %q", stderr.String())
+	}
+}
+
+func TestRunReindexRebuildsDerivedIndex(t *testing.T) {
+	root := t.TempDir()
+	if _, err := service.Init(t.Context(), service.InitRequest{VaultPath: root, Defaults: true}); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "systems"), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "systems", "db.md"), []byte("---\ntype: System\ntitle: DB\n---\nPrimary database\n"), 0o644); err != nil {
+		t.Fatalf("write concept: %v", err)
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := run([]string{"kvt", "reindex", "--vault", root}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("exit code = %d, stderr = %q", code, stderr.String())
+	}
+	corruptFTSRows(t, root, "systems/db.md")
+
+	stdout.Reset()
+	stderr.Reset()
+	code = run([]string{"kvt", "reindex", "--vault", root}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("second exit code = %d, stderr = %q", code, stderr.String())
+	}
+
+	cfg, err := config.Load(root, "")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	svc, err := service.New(root, cfg, service.Deps{})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	list, err := svc.List(t.Context(), index.ListRequest{Type: "System"})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(list.Documents) != 1 || list.Documents[0].Path != "systems/db.md" {
+		t.Fatalf("documents = %#v", list.Documents)
+	}
+	grep, err := svc.Grep(t.Context(), index.GrepRequest{Query: "Primary", Limit: 10})
+	if err != nil {
+		t.Fatalf("Grep: %v", err)
+	}
+	if len(grep.Matches) != 1 || grep.Matches[0].Path != "systems/db.md" {
+		t.Fatalf("grep matches = %#v", grep.Matches)
+	}
+}
+
+func TestRunServeRejectsUninitializedVault(t *testing.T) {
+	root := t.TempDir()
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := run([]string{"kvt", "serve", "--vault", root}, &stdout, &stderr)
+	if code != 1 {
+		t.Fatalf("exit code = %d, stderr = %q", code, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "kvt init") {
+		t.Fatalf("expected init guidance, stderr = %q", stderr.String())
+	}
+}
+
+func corruptFTSRows(t *testing.T, root string, docPath string) {
+	t.Helper()
+	dbPath := filepath.Join(root, ".kvt", "index.db")
+	dsn := url.URL{Scheme: "file", Path: dbPath}
+	db, err := sql.Open("sqlite3", dsn.String())
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(`DELETE FROM kb_fts WHERE path = ?`, docPath); err != nil {
+		t.Fatalf("corrupt fts rows: %v", err)
 	}
 }

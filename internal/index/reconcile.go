@@ -23,6 +23,14 @@ type ReconcileResult struct {
 }
 
 func (db *DB) Reconcile(ctx context.Context, root string) (ReconcileResult, error) {
+	return db.reconcile(ctx, root, false)
+}
+
+func (db *DB) Rebuild(ctx context.Context, root string) (ReconcileResult, error) {
+	return db.reconcile(ctx, root, true)
+}
+
+func (db *DB) reconcile(ctx context.Context, root string, force bool) (ReconcileResult, error) {
 	if err := ctx.Err(); err != nil {
 		return ReconcileResult{}, err
 	}
@@ -68,7 +76,7 @@ func (db *DB) Reconcile(ctx context.Context, root string) (ReconcileResult, erro
 		}
 		docHash := frontmatter.Hash(data)
 		seen[normalized.String()] = struct{}{}
-		if existing[normalized.String()] == docHash {
+		if !force && existing[normalized.String()] == docHash {
 			return nil
 		}
 		doc, err := frontmatter.Parse(data)
