@@ -23,8 +23,9 @@ search and a configurable ontology layer.
    No baked-in model.
 4. **Concurrent agents.** Multiple AI agents and humans can read/write
    simultaneously. Writes are serialized and committed directly to
-   `main`; optimistic concurrency (content-hash preconditions) rejects
-   stale writes with an error the agent can react to.
+   the vault branch; optimistic concurrency (content-hash
+   preconditions) rejects stale writes with an error the agent can
+   react to.
 5. **Ontology-aware.** A configurable ontology defines which types
    exist and which frontmatter fields they require. Validation runs
    in the write path — strict (reject) or advisory (warn).
@@ -86,9 +87,8 @@ The primary store is a directory of markdown files conforming to OKF
 v0.1. Every concept is one `.md` file with YAML frontmatter including
 at minimum a `type` field.
 
-Reserved files: `index.md` (per-directory listing) and `log.md`
-(changelog) are maintained by the service, not by agents. They
-evolve by different rules:
+Reserved file: `index.md` (per-directory listing) is maintained by
+the service, not by agents.
 
 `index.md` is a pure function of the directory it lists. On every
 write the affected directory's index is regenerated from frontmatter
@@ -102,24 +102,9 @@ length-controlled like `kvt_summary`: at most
 `limits.index_max_entries` per section (default 50), overflow
 collapsing to "… and N more — see `kvt_list`".
 
-`log.md` is an append-only projection of git history in OKF's
-changelog format: ISO date headings (`YYYY-MM-DD`), newest day
-first, one terse entry per commit using the spec's bold-keyword
-convention (`**Creation**` / `**Update**` / `**Deletion**`, a link
-to the affected concept, agent provenance) appended under today's
-heading. OKF permits per-directory logs; KVT maintains a single
-root `log.md` — one changelog per vault. Like the indexes it is
-length-controlled: a sliding window of the most recent
-`limits.log_max_entries` (default 200) — new entries appended at
-the top, the oldest trimmed off the bottom, entries themselves
-never edited. Nothing is lost by trimming: `log.md` is a projection
-of git history (rebuildable from `git log` at any time), and the
-full past stays reachable through `kvt_log`; a footer line says so.
-
-Both reserved files are excluded from the search index — navigation
-listings and an ever-growing changelog would pollute results and
-waste embeddings. They remain readable via `kvt_read` like any
-file.
+The reserved file is excluded from the search index — navigation
+listings would pollute results and waste embeddings. It remains
+readable via `kvt_read` like any file.
 
 Paths are strictly normalized: bundle-relative, forward-slash
 separated, lowercase, each segment matching `[a-z0-9_][a-z0-9._-]*`
@@ -266,7 +251,7 @@ size bounds.
 
 ### 5. Git Ops
 
-All writes commit directly to `main`:
+All writes commit directly to one vault branch:
 
 1. Writes are serialized by an in-process lock (single writer; reads
    are never blocked).
@@ -277,12 +262,22 @@ All writes commit directly to `main`:
    client last read (`base_hash`). If the file changed since, the
    write is rejected with a conflict error carrying the current
    content — the agent re-reads, re-applies, and retries.
-4. The service maintains the OKF reserved files in the same commit:
-   the affected directory's `index.md` is regenerated and a `log.md`
-   entry is appended, so navigation and changelog never drift. It
-   also sets the OKF-recommended `timestamp` frontmatter field on
-   every write and edit — the service's clock is authoritative, and
-   a client-supplied `timestamp` is always overwritten.
+4. The service maintains the OKF reserved file in the same commit:
+   the affected directory's `index.md` is regenerated so navigation
+   never drifts. It also sets the OKF-recommended `timestamp`
+   frontmatter field on every write and edit — the service's clock is
+   authoritative, and a client-supplied `timestamp` is always
+   overwritten.
+
+Fresh vaults use `main`: `kvt init` creates new repositories with
+`git init -b main`. During guided setup KVT asks which branch is the
+vault branch; the default is `main` for fresh vaults and the current
+checked-out branch (`git symbolic-ref --short HEAD`) for adopted
+repositories. KVT records that choice in `.kvt/config.yaml` instead
+of inferring it from `.git/config` or renaming the repo's branch.
+`kvt serve` only writes while the working tree is checked out on that
+branch; a detached HEAD or different branch is an operator error
+surfaced in `/health`.
 
 **Remote push.** Remotes belong to the repo, not to KVT: the vault's
 own git config supplies the remote and the credentials (SSH agent,
@@ -363,7 +358,8 @@ continue — never a silent cut.
 
 **Write tools:**
 - `kvt_write` — Create a concept or replace its full content
-  (commits to main; optional `base_hash` for conflict detection)
+  (commits to the vault branch; optional `base_hash` for conflict
+  detection)
 - `kvt_edit` — Surgical edit via exact string replacement:
   `old_string` must match the current content exactly and uniquely
   (or pass `replace_all`); on a failed match the error shows the
@@ -375,7 +371,7 @@ because the service mutates content on write (`timestamp`
 injection), so the hash of what the agent sent is *not* the hash of
 what landed — returning it lets an agent chain edits without a
 re-read between each one.
-- `kvt_delete` — Remove a concept file (commits to main)
+- `kvt_delete` — Remove a concept file (commits to the vault branch)
 - `kvt_validate` — Run ontology validation across the vault. Also
   reports broken links: body links and `ref` fields whose target
   doesn't exist (backed by `kb_links`)
@@ -406,7 +402,7 @@ surface is designed, not incidental:
 - `kvt_howto` ships the deep playbook as a callable skill: the OKF
   authoring subset (frontmatter with a required `type`,
   bundle-relative link syntax, the `# Citations` convention — and
-  what *not* to write: `index.md`, `log.md`, and `timestamp` are
+  what *not* to write: `index.md` and `timestamp` are
   service-owned), how to formulate hybrid-search queries, how to
   structure a valid concept for each ontology type, linking
   conventions, and conflict-retry etiquette. Consumer-side OKF spec
@@ -420,15 +416,14 @@ surface is designed, not incidental:
   The connect-time `instructions` stay short and point to `kvt_howto`
   for depth: progressive disclosure, the same idea as OKF's
   `index.md`.
-- `SKILL.md` at the vault root carries the same playbook to coding
-  agents that open the vault as a plain checkout — no MCP connection
-  required (Claude Code and compatible agents auto-discover it). It
-  covers the direct-file workflow: OKF authoring rules, path
-  normalization, which files are service-owned, and `kvt validate`
-  before committing. It is rendered from the same source as
-  `kvt_howto` (defaults + `_howto.md` overrides) and regenerated by
-  the service when that source or the ontology changes — one
-  playbook, three delivery surfaces, no drift.
+- The KVT repository ships an installable coding-agent skill
+  (`SKILL.md`) for agents that operate on vault files as a plain
+  checkout — no MCP connection required. It is part of the KVT
+  distribution, not a file created inside each vault. It covers the
+  direct-file workflow: OKF authoring rules, path normalization,
+  which files are service-owned, and `kvt validate` before committing.
+  Vault-specific house rules stay in `_howto.md` and surface through
+  `kvt_howto`, the MCP resource, and the MCP prompt.
 
 ### 7. REST API
 
@@ -438,6 +433,11 @@ tooling, CI/CD, and non-MCP clients. Authorization is optional: when
 `Authorization: Bearer <key>`; when unset, the API is open (local
 single-user mode).
 
+Routes containing `{path...}` use a greedy wildcard for the full
+bundle-relative path, so `people/alice.md` is addressed as
+`/concepts/people/alice.md`. KVT's path rules forbid characters that
+would need special URL encoding; slashes remain path separators.
+
 | Method | Path | Purpose |
 |--------|------|---------|
 | GET | /health | Liveness |
@@ -445,12 +445,12 @@ single-user mode).
 | POST | /search | Hybrid search |
 | POST | /grep | Literal/regex content match |
 | GET | /concepts | List as table (columns/filter/sort/paginate) |
-| GET | /concepts/{path} | Read concept |
-| GET | /concepts/{path}/history | File history with diffs (paginated) |
+| GET | /concepts/{path...} | Read concept |
+| GET | /history/{path...} | File history with diffs (paginated) |
 | GET | /log | Commit history (paginated) |
 | POST | /concepts | Write concept (full content) |
-| PATCH | /concepts/{path} | String-replacement edit |
-| DELETE | /concepts/{path} | Delete concept |
+| PATCH | /concepts/{path...} | String-replacement edit |
+| DELETE | /concepts/{path...} | Delete concept |
 | GET | /types | List ontology types |
 | POST | /validate | Run validation |
 | POST | /push | Push to configured remote |
@@ -460,19 +460,20 @@ single-user mode).
 ## CLI
 
 - `kvt init --vault <path>` — Bootstrap. On an empty directory:
-  `git init`, then write `.gitignore` (ignoring `.kvt/`), a root
-  `index.md`, `log.md`, a commented `_ontology.yaml` starter, and
-  `SKILL.md` — all in a single initial commit. The `.kvt/` directory is created
-  on disk but never committed: it is ignored derived state. On an
-  existing git repo of markdown, `init` adopts it: adds only what's
-  missing (e.g. appends `.kvt/` to `.gitignore`), touches nothing
-  else. Idempotent — re-running on a vault is a no-op.
+  `git init -b main`, then write `.gitignore` (ignoring `.kvt/`), a
+  root `index.md` and a commented `_ontology.yaml` starter — all in a
+  single initial commit. The `.kvt/` directory is created on disk but
+  never committed: it is ignored derived state. On an existing git
+  repo of markdown, `init` adopts it: adds only what's missing (e.g.
+  appends `.kvt/` to `.gitignore`), defaults the guided setup to the
+  current branch as the vault branch, and touches nothing else.
+  Idempotent — re-running on a vault is a no-op.
   `init` then runs an interactive questionnaire (embedder endpoint,
-  model and dimensions, LLM endpoint, rerank on/off, push mode) and
-  writes the answers to `.kvt/config.yaml` — vault-specific,
-  git-ignored, environment-bound configuration lives with the vault
-  but outside its history. `--defaults` skips the questionnaire for
-  scripted setups.
+  model and dimensions, LLM endpoint, rerank on/off, vault branch,
+  push mode) and writes the answers to `.kvt/config.yaml` —
+  vault-specific, git-ignored, environment-bound configuration lives
+  with the vault but outside its history. `--defaults` skips the
+  questionnaire for scripted setups.
 - `kvt serve --vault <path>` — Run the service (REST + MCP).
   Refuses to serve a directory that isn't an initialized vault and
   points at `kvt init` — never silently adopts an arbitrary
@@ -502,7 +503,6 @@ the same vault refuses to start.
 ├── .gitignore                   # Ignores .kvt/
 ├── _ontology.yaml               # Optional ontology definition
 ├── index.md                     # Bundle root index (service-maintained)
-├── log.md                       # Change log (service-maintained)
 ├── people/
 │   ├── index.md                 # Directory index (service-maintained)
 │   └── alice.md
@@ -543,6 +543,8 @@ search:
   rerank_top_k: 10
 
 git:
+  branch: main        # branch KVT is allowed to write to; guided
+                      # setup defaults to current branch for adopted repos
   # Remotes and credentials come from the repo's own git config —
   # a mounted host repo brings them with it. KVT only decides when
   # to push.
@@ -569,8 +571,6 @@ limits:
                              # cursor.
   index_max_entries: 50      # per index.md section; overflow
                              # collapses to "… and N more"
-  log_max_entries: 200       # log.md sliding window; full history
-                             # stays in git / kvt_log
 ```
 
 ---
@@ -648,11 +648,11 @@ sections above double as the test list. Correctness is the feature.
 | Knowledge format | OKF v0.1 | Vendor-neutral, human/agent-readable, git-friendly standard |
 | Search index | SQLite (FTS5 + vec0) | Zero-dependency embedded search, single file |
 | Embeddings | External (OpenAI-compatible or Ollama native) | User's choice of model, not locked in |
-| Git workflow | Serialized direct commits to `main` | Simple and auditable; conflicts surface as optimistic-concurrency errors, not merges |
+| Git workflow | Serialized direct commits to one vault branch | Simple and auditable; conflicts surface as optimistic-concurrency errors, not merges |
 | Chunking | Heading-aware, size-bounded, breadcrumb context | Whole-doc embeddings degrade on long files; structure-aware chunks retrieve best |
 | Score fusion | Reciprocal rank fusion | BM25 and cosine scores aren't comparable; rank-based fusion needs no normalization |
 | Auth | Optional bearer API keys | Open by default locally; one config key to secure when exposed |
-| Reserved files | Service-maintained | `index.md`/`log.md` regenerated on every write, never drift |
+| Reserved files | Service-maintained | `index.md` regenerated on every write, never drifts |
 | Remote sync | Async fast-forward push, per-commit or debounced | Never blocks writes; remote and credentials come from the repo's own git config |
 | Ontology | YAML with path rules | Flexible mapping of types to file locations |
 | Validation | Strict or advisory, in the write path | Reject the write, or accept it and return warnings |
