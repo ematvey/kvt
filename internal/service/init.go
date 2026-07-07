@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -267,6 +268,19 @@ func existingMarkdownPaths(root string) ([]pathutil.Path, error) {
 			if d.Name() == ".git" || d.Name() == ".kvt" {
 				return filepath.SkipDir
 			}
+			if filePath != root {
+				rel, err := filepath.Rel(root, filePath)
+				if err != nil {
+					return err
+				}
+				ignored, err := gitIgnored(root, filepath.ToSlash(rel))
+				if err != nil {
+					return err
+				}
+				if ignored {
+					return filepath.SkipDir
+				}
+			}
 			return nil
 		}
 		if filepath.Ext(d.Name()) != ".md" {
@@ -276,9 +290,17 @@ func existingMarkdownPaths(root string) ([]pathutil.Path, error) {
 		if err != nil {
 			return err
 		}
-		normalized, err := pathutil.Normalize(filepath.ToSlash(rel))
+		rel = filepath.ToSlash(rel)
+		ignored, err := gitIgnored(root, rel)
 		if err != nil {
-			return fmt.Errorf("invalid markdown path %q: %w", filepath.ToSlash(rel), err)
+			return err
+		}
+		if ignored {
+			return nil
+		}
+		normalized, err := pathutil.Normalize(rel)
+		if err != nil {
+			return fmt.Errorf("invalid markdown path %q: %w", rel, err)
 		}
 		if d.Name() == "index.md" {
 			return nil
@@ -290,6 +312,23 @@ func existingMarkdownPaths(root string) ([]pathutil.Path, error) {
 		return nil, err
 	}
 	return paths, nil
+}
+
+func gitIgnored(root string, rel string) (bool, error) {
+	if rel == "" || rel == "." {
+		return false, nil
+	}
+	cmd := exec.Command("git", "check-ignore", "-q", "--", rel)
+	cmd.Dir = root
+	err := cmd.Run()
+	if err == nil {
+		return true, nil
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+		return false, nil
+	}
+	return false, fmt.Errorf("git check-ignore %q: %w", rel, err)
 }
 
 func hasGitRepo(root string) (bool, error) {

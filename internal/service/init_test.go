@@ -213,6 +213,27 @@ func TestInitAdoptionRejectsInvalidNestedIndexPath(t *testing.T) {
 	assertNoInitSupportFiles(t, root)
 }
 
+func TestInitAdoptionIgnoresGitIgnoredMarkdownScratchFiles(t *testing.T) {
+	testutil.RequireGit(t)
+	root := t.TempDir()
+	runGit(t, root, "init", "-b", "trunk")
+	runGit(t, root, "config", "user.name", "test")
+	runGit(t, root, "config", "user.email", "test@example.com")
+	writeFile(t, filepath.Join(root, ".gitignore"), ".superpowers/\n")
+	writeFile(t, filepath.Join(root, "notes", "existing.md"), "---\ntype: Note\ntitle: Existing\n---\nBody\n")
+	runGit(t, root, "add", ".")
+	runGit(t, root, "commit", "-m", "seed")
+
+	writeFile(t, filepath.Join(root, ".superpowers", "sdd", "task-4-report.md"), "# scratch\n")
+
+	if _, err := Init(t.Context(), InitRequest{VaultPath: root, Defaults: true}); err != nil {
+		t.Fatalf("Init adopt: %v", err)
+	}
+	if got := gitOutput(t, root, "check-ignore", ".superpowers/sdd/task-4-report.md"); got != ".superpowers/sdd/task-4-report.md\n" {
+		t.Fatalf("check-ignore = %q", got)
+	}
+}
+
 func TestInitIsIdempotent(t *testing.T) {
 	testutil.RequireGit(t)
 	root := t.TempDir()
