@@ -85,7 +85,7 @@ func WithTimestamp(doc Document, now time.Time) Document {
 	} else {
 		clone.Fields = make(map[string]any, 1)
 	}
-	clone.Fields["timestamp"] = now.UTC().Format(time.RFC3339)
+	clone.Fields["timestamp"] = now.UTC().Format(time.RFC3339Nano)
 	return clone
 }
 

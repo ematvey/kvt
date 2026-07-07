@@ -60,6 +60,56 @@ func TestWriteCommitsTimestampAndRejectsStaleBaseHash(t *testing.T) {
 	}
 }
 
+func TestWriteIdenticalContentWithSameClockStillCreatesCommit(t *testing.T) {
+	testutil.RequireGit(t)
+	root := t.TempDir()
+	if _, err := Init(t.Context(), InitRequest{VaultPath: root, Defaults: true}); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	cfg, err := config.Load(root, "")
+	if err != nil {
+		t.Fatalf("Load config: %v", err)
+	}
+	fixedNow := time.Date(2026, 7, 7, 12, 0, 0, 0, time.UTC)
+	svc, err := New(root, cfg, Deps{
+		Now: func() time.Time {
+			return fixedNow
+		},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	content := "---\ntype: Note\ntitle: Same\n---\nBody\n"
+
+	first, err := svc.Write(t.Context(), WriteRequest{
+		Path:    "notes/same.md",
+		Content: content,
+		Agent:   "test-agent",
+	})
+	if err != nil {
+		t.Fatalf("first write: %v", err)
+	}
+	second, err := svc.Write(t.Context(), WriteRequest{
+		Path:     "notes/same.md",
+		Content:  content,
+		BaseHash: first.Hash,
+		Agent:    "test-agent",
+	})
+	if err != nil {
+		t.Fatalf("second write: %v", err)
+	}
+
+	if second.Hash == first.Hash {
+		t.Fatalf("hash did not change across successful writes")
+	}
+	if second.Commit.Hash == first.Commit.Hash {
+		t.Fatalf("commit did not advance: %q", second.Commit.Hash)
+	}
+	if got := gitOutput(t, root, "rev-list", "--count", "HEAD"); got != "3\n" {
+		t.Fatalf("commit count = %q", got)
+	}
+}
+
 func TestEditRequiresUniqueOldString(t *testing.T) {
 	testutil.RequireGit(t)
 	h := newServiceHarness(t)

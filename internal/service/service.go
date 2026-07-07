@@ -21,11 +21,12 @@ type Deps struct {
 }
 
 type Service struct {
-	root     string
-	cfg      config.Config
-	git      gitops.Client
-	now      func() time.Time
-	writerMu sync.Mutex
+	root          string
+	cfg           config.Config
+	git           gitops.Client
+	now           func() time.Time
+	writerMu      sync.Mutex
+	lastTimestamp time.Time
 }
 
 type conceptState struct {
@@ -104,6 +105,9 @@ func (s *Service) commitMutation(message string, agent string, paths []string) (
 	if err != nil {
 		return CommitInfo{}, err
 	}
+	if !result.Changed {
+		return CommitInfo{}, fmt.Errorf("mutation produced no git commit")
+	}
 	return CommitInfo{
 		Hash:      result.Hash,
 		ShortHash: result.ShortHash,
@@ -142,7 +146,7 @@ func (s *Service) prepareDocument(docPath pathutil.Path, rawContent string) (pre
 	if err != nil {
 		return preparedDocument{}, err
 	}
-	doc = frontmatter.WithTimestamp(doc, s.now())
+	doc = frontmatter.WithTimestamp(doc, s.nextTimestamp())
 
 	schema, err := ontology.Load(s.root)
 	if err != nil {
@@ -169,4 +173,13 @@ func (s *Service) prepareDocument(docPath pathutil.Path, rawContent string) (pre
 		timestamp: timestamp,
 		warnings:  validation.Warnings,
 	}, nil
+}
+
+func (s *Service) nextTimestamp() time.Time {
+	now := s.now().UTC()
+	if !s.lastTimestamp.IsZero() && !now.After(s.lastTimestamp) {
+		now = s.lastTimestamp.Add(time.Nanosecond)
+	}
+	s.lastTimestamp = now
+	return now
 }
