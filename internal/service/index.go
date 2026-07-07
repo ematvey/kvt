@@ -25,7 +25,14 @@ func (s *Service) Reconcile(ctx context.Context) (index.ReconcileResult, error) 
 	}
 	s.writerMu.Lock()
 	defer s.writerMu.Unlock()
-	return s.index.Reconcile(ctx, s.root)
+	result, err := s.index.Reconcile(ctx, s.root)
+	if err != nil {
+		return index.ReconcileResult{}, err
+	}
+	for _, doc := range result.AppliedDocuments {
+		s.enqueueIndexedEmbedding(doc)
+	}
+	return result, nil
 }
 
 func (s *Service) Search(ctx context.Context, req SearchRequest) (SearchResponse, error) {

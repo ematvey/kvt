@@ -17,8 +17,9 @@ import (
 )
 
 type ReconcileResult struct {
-	Applied int
-	Removed int
+	Applied          int
+	Removed          int
+	AppliedDocuments []IndexedDocument
 }
 
 func (db *DB) Reconcile(ctx context.Context, root string) (ReconcileResult, error) {
@@ -74,10 +75,12 @@ func (db *DB) Reconcile(ctx context.Context, root string) (ReconcileResult, erro
 		if err != nil {
 			return err
 		}
-		if err := db.ApplyDocument(ctx, BuildIndexedDocument(schema, normalized, doc, docHash)); err != nil {
+		indexed := BuildIndexedDocument(schema, normalized, doc, docHash)
+		if err := db.ApplyDocument(ctx, indexed); err != nil {
 			return err
 		}
 		result.Applied++
+		result.AppliedDocuments = append(result.AppliedDocuments, indexed)
 		return nil
 	})
 	if err != nil {

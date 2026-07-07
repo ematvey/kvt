@@ -1,6 +1,7 @@
 package index
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -88,6 +89,11 @@ func TestVectorSearchStatementUsesSQLiteVecKNNShape(t *testing.T) {
 	if strings.Count(normalized, "order by") != 1 || !strings.Contains(normalized, "order by v.distance asc") {
 		t.Fatalf("query should order only by distance:\n%s", query)
 	}
+	if !strings.Contains(normalized, "kb_doc_embeddings") ||
+		!strings.Contains(normalized, "e.state = 'ready'") ||
+		!strings.Contains(normalized, "e.updated_at = d.timestamp") {
+		t.Fatalf("query should require ready current embeddings:\n%s", query)
+	}
 	if len(args) != 2 || args[0] != "[1,0]" || args[1] != 25 {
 		t.Fatalf("args = %#v", args)
 	}
@@ -117,6 +123,94 @@ func TestApplyDocumentClearsExistingVectorRows(t *testing.T) {
 	}
 	if got := fakeVectorRowCount(t, db, "people/bob.md"); got != 1 {
 		t.Fatalf("bob vector rows = %d", got)
+	}
+}
+
+func TestUpsertEmbeddingsRejectsStaleDocumentTimestamp(t *testing.T) {
+	db := openTempDB(t)
+	createFakeVectorTable(t, db)
+	db.vecAvailable = true
+	if err := db.ApplyDocument(t.Context(), IndexedDocument{
+		Path:      "people/alice.md",
+		Hash:      "h2",
+		Title:     "Alice",
+		Type:      "Person",
+		Timestamp: "2026-07-07T12:00:01Z",
+		Chunks: []Chunk{
+			{Ordinal: 0, Text: "new body"},
+		},
+	}); err != nil {
+		t.Fatalf("ApplyDocument: %v", err)
+	}
+
+	err := db.UpsertEmbeddings(t.Context(), "people/alice.md", []ChunkEmbedding{
+		{Ordinal: 0, Vector: []float32{1, 0}, UpdatedAt: "2026-07-07T12:00:00Z"},
+	})
+	if !errors.Is(err, ErrStaleEmbedding) {
+		t.Fatalf("expected stale embedding error, got %v", err)
+	}
+	if got := fakeVectorRowCount(t, db, "people/alice.md"); got != 0 {
+		t.Fatalf("alice vector rows = %d", got)
+	}
+	summary, err := db.Summary(t.Context(), SummaryRequest{})
+	if err != nil {
+		t.Fatalf("Summary: %v", err)
+	}
+	if summary.EmbeddingPendingCount != 1 || summary.EmbeddingFailedCount != 0 {
+		t.Fatalf("embedding counts = pending %d failed %d", summary.EmbeddingPendingCount, summary.EmbeddingFailedCount)
+	}
+}
+
+func TestUpsertEmbeddingsRejectsEmptyVectors(t *testing.T) {
+	db := openTempDB(t)
+	createFakeVectorTable(t, db)
+	db.vecAvailable = true
+	if err := db.ApplyDocument(t.Context(), IndexedDocument{
+		Path:      "people/alice.md",
+		Hash:      "h1",
+		Title:     "Alice",
+		Type:      "Person",
+		Timestamp: "2026-07-07T12:00:00Z",
+		Chunks: []Chunk{
+			{Ordinal: 0, Text: "body"},
+		},
+	}); err != nil {
+		t.Fatalf("ApplyDocument: %v", err)
+	}
+
+	err := db.UpsertEmbeddings(t.Context(), "people/alice.md", []ChunkEmbedding{
+		{Ordinal: 0, Vector: nil, UpdatedAt: "2026-07-07T12:00:00Z"},
+	})
+	if err == nil {
+		t.Fatalf("expected empty vector error")
+	}
+	if got := fakeVectorRowCount(t, db, "people/alice.md"); got != 0 {
+		t.Fatalf("alice vector rows = %d", got)
+	}
+}
+
+func TestSummaryReportsEmbeddingStateCounts(t *testing.T) {
+	db := openTempDB(t)
+	createFakeVectorTable(t, db)
+	db.vecAvailable = true
+	for _, doc := range []IndexedDocument{
+		{Path: "people/alice.md", Hash: "h1", Title: "Alice", Type: "Person", Timestamp: "2026-07-07T12:00:00Z", Chunks: []Chunk{{Ordinal: 0, Text: "alice"}}},
+		{Path: "people/bob.md", Hash: "h2", Title: "Bob", Type: "Person", Timestamp: "2026-07-07T12:00:01Z", Chunks: []Chunk{{Ordinal: 0, Text: "bob"}}},
+	} {
+		if err := db.ApplyDocument(t.Context(), doc); err != nil {
+			t.Fatalf("ApplyDocument(%s): %v", doc.Path, err)
+		}
+	}
+	if err := db.MarkEmbeddingState(t.Context(), "people/bob.md", "failed", "embedder down", "2026-07-07T12:00:01Z"); err != nil {
+		t.Fatalf("MarkEmbeddingState: %v", err)
+	}
+
+	summary, err := db.Summary(t.Context(), SummaryRequest{})
+	if err != nil {
+		t.Fatalf("Summary: %v", err)
+	}
+	if summary.EmbeddingPendingCount != 1 || summary.EmbeddingFailedCount != 1 {
+		t.Fatalf("embedding counts = pending %d failed %d", summary.EmbeddingPendingCount, summary.EmbeddingFailedCount)
 	}
 }
 

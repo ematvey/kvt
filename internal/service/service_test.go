@@ -1,6 +1,8 @@
 package service
 
 import (
+	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -254,6 +256,52 @@ func TestWriteDoesNotEnqueueEmbeddingWhenCommitFails(t *testing.T) {
 	}
 }
 
+func TestReconcileQueuesAppliedDocumentsForEmbedding(t *testing.T) {
+	testutil.RequireGit(t)
+	h := newServiceHarness(t)
+	h.service.embedQueue = make(chan embeddingJob, 1)
+	writeFile(t, filepath.Join(h.root, "notes", "external.md"), "---\ntype: Note\ntitle: External\n---\nBody\n")
+
+	result, err := h.service.Reconcile(t.Context())
+	if err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	if result.Applied != 1 {
+		t.Fatalf("applied = %d", result.Applied)
+	}
+	select {
+	case job := <-h.service.embedQueue:
+		if job.path != "notes/external.md" || len(job.chunks) == 0 {
+			t.Fatalf("job = %#v", job)
+		}
+	default:
+		t.Fatalf("expected embedding job for reconciled document")
+	}
+}
+
+func TestEmbedWithRetriesRetriesTransientFailures(t *testing.T) {
+	embedder := &flakyServiceEmbedder{
+		failures: 2,
+		vector:   []float32{1, 0},
+	}
+	svc := &Service{
+		embedder:              embedder,
+		embeddingMaxAttempts:  3,
+		embeddingBackoffDelay: func(int) time.Duration { return 0 },
+	}
+
+	vectors, err := svc.embedWithRetries(t.Context(), []string{"alpha"})
+	if err != nil {
+		t.Fatalf("embedWithRetries: %v", err)
+	}
+	if embedder.calls != 3 {
+		t.Fatalf("calls = %d", embedder.calls)
+	}
+	if len(vectors) != 1 || len(vectors[0]) != 2 {
+		t.Fatalf("vectors = %#v", vectors)
+	}
+}
+
 func TestValidateAdvisoryModeReturnsErrorsAsWarnings(t *testing.T) {
 	testutil.RequireGit(t)
 	h := newServiceHarness(t)
@@ -427,6 +475,24 @@ func TestBacklinksSurviveTargetDeleteAndRecreate(t *testing.T) {
 type serviceHarness struct {
 	root    string
 	service *Service
+}
+
+type flakyServiceEmbedder struct {
+	failures int
+	calls    int
+	vector   []float32
+}
+
+func (f *flakyServiceEmbedder) Embed(_ context.Context, texts []string) ([][]float32, error) {
+	f.calls++
+	if f.calls <= f.failures {
+		return nil, errors.New("temporary embedder failure")
+	}
+	vectors := make([][]float32, 0, len(texts))
+	for range texts {
+		vectors = append(vectors, append([]float32(nil), f.vector...))
+	}
+	return vectors, nil
 }
 
 func newServiceHarness(t *testing.T) serviceHarness {

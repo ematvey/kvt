@@ -33,3 +33,29 @@ func TestSplitKeepsCodeBlocksAtomicAndAddsBreadcrumb(t *testing.T) {
 		}
 	}
 }
+
+func TestSplitIncludesHeadingsInSearchText(t *testing.T) {
+	doc := Document{
+		Path:  "systems/db.md",
+		Title: "DB",
+		Type:  "System",
+		Body:  "# Runbook\n\nIntro\n\n## Restart Procedure\n\nSteps\n",
+	}
+
+	chunks, err := Split(doc)
+	if err != nil {
+		t.Fatalf("Split: %v", err)
+	}
+	found := false
+	for _, chunk := range chunks {
+		if strings.Contains(chunk.Text, "Restart Procedure") {
+			found = true
+			if !strings.Contains(chunk.Text, "Steps") {
+				t.Fatalf("heading chunk missing body: %#v", chunk)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("heading missing from search text: %#v", chunks)
+	}
+}

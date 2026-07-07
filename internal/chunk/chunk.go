@@ -52,11 +52,12 @@ func Split(doc Document) ([]Chunk, error) {
 			if text == "" {
 				continue
 			}
+			searchText := strings.TrimSpace(strings.Join(nonEmpty(section.breadcrumb(), text), "\n\n"))
 			prefix := strings.Join(nonEmpty(doc.Title, doc.Type, section.breadcrumb()), " | ")
 			embedText := strings.TrimSpace(strings.Join(nonEmpty(prefix, collapseText(text)), "\n\n"))
 			chunks = append(chunks, Chunk{
 				Ordinal:   len(chunks),
-				Text:      text,
+				Text:      searchText,
 				EmbedText: embedText,
 			})
 		}

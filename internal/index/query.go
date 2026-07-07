@@ -9,6 +9,7 @@ import (
 )
 
 var ErrVectorUnavailable = errors.New("vector search unavailable")
+var ErrStaleEmbedding = errors.New("stale embedding job")
 
 type ListRequest struct {
 	Type       string
@@ -79,11 +80,13 @@ type GrepResponse struct {
 type SummaryRequest struct{}
 
 type SummaryResponse struct {
-	DocumentCount    int
-	CountsByType     map[string]int
-	VecAvailable     bool
-	VecStatus        string
-	LastReconciledAt string
+	DocumentCount         int
+	CountsByType          map[string]int
+	VecAvailable          bool
+	VecStatus             string
+	LastReconciledAt      string
+	EmbeddingPendingCount int
+	EmbeddingFailedCount  int
 }
 
 func (db *DB) List(ctx context.Context, req ListRequest) (ListResponse, error) {
@@ -300,6 +303,7 @@ func vectorSearchStatement(embedding []float32, candidateLimit int) (string, []a
 		SELECT v.path, d.title, d.type, CAST(v.ordinal AS INTEGER), c.text, c.text, v.distance
 		FROM kb_vec v
 		JOIN kb_docs d ON d.path = v.path
+		JOIN kb_doc_embeddings e ON e.path = d.path AND e.state = 'ready' AND e.updated_at = d.timestamp
 		JOIN kb_chunks c ON c.path = v.path AND c.ordinal = CAST(v.ordinal AS INTEGER)
 		WHERE v.embedding MATCH ? AND k = ?
 		ORDER BY v.distance ASC
@@ -325,6 +329,21 @@ func (db *DB) UpsertEmbeddings(ctx context.Context, docPath string, chunks []Chu
 	if !db.vecAvailable {
 		return ErrVectorUnavailable
 	}
+	if len(chunks) == 0 {
+		return nil
+	}
+	expectedTimestamp := strings.TrimSpace(chunks[0].UpdatedAt)
+	if expectedTimestamp == "" {
+		return fmt.Errorf("embedding timestamp is required")
+	}
+	for i, chunk := range chunks {
+		if len(chunk.Vector) == 0 {
+			return fmt.Errorf("embedding %d is empty", i)
+		}
+		if strings.TrimSpace(chunk.UpdatedAt) != expectedTimestamp {
+			return fmt.Errorf("embedding %d timestamp mismatch", i)
+		}
+	}
 
 	tx, err := db.sql.BeginTx(ctx, nil)
 	if err != nil {
@@ -332,13 +351,21 @@ func (db *DB) UpsertEmbeddings(ctx context.Context, docPath string, chunks []Chu
 	}
 	defer tx.Rollback()
 
+	var currentTimestamp string
+	if err := tx.QueryRowContext(ctx, `SELECT timestamp FROM kb_docs WHERE path = ?`, docPath).Scan(&currentTimestamp); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrStaleEmbedding
+		}
+		return err
+	}
+	if currentTimestamp != expectedTimestamp {
+		return ErrStaleEmbedding
+	}
+
 	if _, err := tx.ExecContext(ctx, `DELETE FROM kb_vec WHERE path = ?`, docPath); err != nil {
 		return err
 	}
 	for _, chunk := range chunks {
-		if len(chunk.Vector) == 0 {
-			continue
-		}
 		chunkID := fmt.Sprintf("%s#%d", docPath, chunk.Ordinal)
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO kb_vec(chunk_id, path, ordinal, embedding) VALUES(?, ?, ?, ?)
@@ -350,6 +377,16 @@ func (db *DB) UpsertEmbeddings(ctx context.Context, docPath string, chunks []Chu
 }
 
 func (db *DB) MarkEmbeddingState(ctx context.Context, docPath string, state string, lastError string, updatedAt string) error {
+	var currentTimestamp string
+	if err := db.sql.QueryRowContext(ctx, `SELECT timestamp FROM kb_docs WHERE path = ?`, docPath).Scan(&currentTimestamp); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrStaleEmbedding
+		}
+		return err
+	}
+	if currentTimestamp != updatedAt {
+		return ErrStaleEmbedding
+	}
 	_, err := db.sql.ExecContext(ctx, `
 		INSERT INTO kb_doc_embeddings(path, state, last_error, updated_at)
 		VALUES(?, ?, ?, ?)
@@ -410,6 +447,34 @@ func (db *DB) Summary(ctx context.Context, _ SummaryRequest) (SummaryResponse, e
 	if value, err := db.meta(ctx, "vec_status"); err == nil {
 		resp.VecStatus = value
 	} else if err != nil && err != sql.ErrNoRows {
+		return SummaryResponse{}, err
+	}
+
+	embeddingRows, err := db.sql.QueryContext(ctx, `
+		SELECT e.state, COUNT(*)
+		FROM kb_doc_embeddings e
+		JOIN kb_docs d ON d.path = e.path AND d.timestamp = e.updated_at
+		WHERE e.state IN ('pending', 'failed')
+		GROUP BY e.state
+	`)
+	if err != nil {
+		return SummaryResponse{}, err
+	}
+	defer embeddingRows.Close()
+	for embeddingRows.Next() {
+		var state string
+		var count int
+		if err := embeddingRows.Scan(&state, &count); err != nil {
+			return SummaryResponse{}, err
+		}
+		switch state {
+		case "pending":
+			resp.EmbeddingPendingCount = count
+		case "failed":
+			resp.EmbeddingFailedCount = count
+		}
+	}
+	if err := embeddingRows.Err(); err != nil {
 		return SummaryResponse{}, err
 	}
 	return resp, nil

@@ -21,22 +21,26 @@ import (
 )
 
 type Deps struct {
-	Now      func() time.Time
-	Embedder embed.Embedder
-	Reranker rerank.Reranker
+	Now                   func() time.Time
+	Embedder              embed.Embedder
+	Reranker              rerank.Reranker
+	EmbeddingMaxAttempts  int
+	EmbeddingBackoffDelay func(attempt int) time.Duration
 }
 
 type Service struct {
-	root          string
-	cfg           config.Config
-	git           gitops.Client
-	index         *index.DB
-	now           func() time.Time
-	embedder      embed.Embedder
-	reranker      rerank.Reranker
-	writerMu      sync.Mutex
-	lastTimestamp time.Time
-	embedQueue    chan embeddingJob
+	root                  string
+	cfg                   config.Config
+	git                   gitops.Client
+	index                 *index.DB
+	now                   func() time.Time
+	embedder              embed.Embedder
+	reranker              rerank.Reranker
+	embeddingMaxAttempts  int
+	embeddingBackoffDelay func(attempt int) time.Duration
+	writerMu              sync.Mutex
+	lastTimestamp         time.Time
+	embedQueue            chan embeddingJob
 }
 
 type conceptState struct {
@@ -80,6 +84,19 @@ func New(root string, cfg config.Config, deps Deps) (*Service, error) {
 	if reranker == nil {
 		reranker = buildReranker(cfg)
 	}
+	embeddingMaxAttempts := deps.EmbeddingMaxAttempts
+	if embeddingMaxAttempts <= 0 {
+		embeddingMaxAttempts = 3
+	}
+	embeddingBackoffDelay := deps.EmbeddingBackoffDelay
+	if embeddingBackoffDelay == nil {
+		embeddingBackoffDelay = func(attempt int) time.Duration {
+			if attempt <= 0 {
+				attempt = 1
+			}
+			return time.Duration(1<<uint(attempt-1)) * 250 * time.Millisecond
+		}
+	}
 	indexDB, err := index.Open(filepath.Join(root, ".kvt", "index.db"), index.Options{
 		EnableVector:    embedder != nil,
 		VectorDimension: cfg.Embedder.Dimensions,
@@ -88,13 +105,15 @@ func New(root string, cfg config.Config, deps Deps) (*Service, error) {
 		return nil, err
 	}
 	svc := &Service{
-		root:     root,
-		cfg:      cfg,
-		git:      gitops.New(root),
-		index:    indexDB,
-		now:      now,
-		embedder: embedder,
-		reranker: reranker,
+		root:                  root,
+		cfg:                   cfg,
+		git:                   gitops.New(root),
+		index:                 indexDB,
+		now:                   now,
+		embedder:              embedder,
+		reranker:              reranker,
+		embeddingMaxAttempts:  embeddingMaxAttempts,
+		embeddingBackoffDelay: embeddingBackoffDelay,
 	}
 	if embedder != nil && indexDB.VectorAvailable() {
 		svc.embedQueue = make(chan embeddingJob, 64)
@@ -338,6 +357,22 @@ func (s *Service) enqueueEmbedding(doc preparedDocument) {
 	}
 }
 
+func (s *Service) enqueueIndexedEmbedding(doc index.IndexedDocument) {
+	if s.embedQueue == nil {
+		return
+	}
+	job := embeddingJob{
+		path:      doc.Path,
+		timestamp: doc.Timestamp,
+		chunks:    append([]index.Chunk(nil), doc.Chunks...),
+	}
+	select {
+	case s.embedQueue <- job:
+	default:
+		_ = s.index.MarkEmbeddingState(context.Background(), doc.Path, "failed", "embedding queue full", doc.Timestamp)
+	}
+}
+
 func (s *Service) runEmbeddingWorker() {
 	for job := range s.embedQueue {
 		texts := make([]string, 0, len(job.chunks))
@@ -357,7 +392,7 @@ func (s *Service) runEmbeddingWorker() {
 			_ = s.index.MarkEmbeddingState(context.Background(), job.path, "ready", "", job.timestamp)
 			continue
 		}
-		vectors, err := s.embedder.Embed(context.Background(), texts)
+		vectors, err := s.embedWithRetries(context.Background(), texts)
 		if err != nil {
 			_ = s.index.MarkEmbeddingState(context.Background(), job.path, "failed", err.Error(), job.timestamp)
 			continue
@@ -386,6 +421,44 @@ func (s *Service) runEmbeddingWorker() {
 		}
 		_ = s.index.MarkEmbeddingState(context.Background(), job.path, "ready", "", job.timestamp)
 	}
+}
+
+func (s *Service) embedWithRetries(ctx context.Context, texts []string) ([][]float32, error) {
+	attempts := s.embeddingMaxAttempts
+	if attempts <= 0 {
+		attempts = 1
+	}
+	var lastErr error
+	for attempt := 1; attempt <= attempts; attempt++ {
+		vectors, err := s.embedder.Embed(ctx, texts)
+		if err == nil {
+			return vectors, nil
+		}
+		lastErr = err
+		if attempt == attempts {
+			break
+		}
+		delay := time.Duration(0)
+		if s.embeddingBackoffDelay != nil {
+			delay = s.embeddingBackoffDelay(attempt)
+		}
+		if delay <= 0 {
+			continue
+		}
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+			return nil, ctx.Err()
+		case <-timer.C:
+		}
+	}
+	return nil, lastErr
 }
 
 func addValidationIssue(result *ontology.ValidationResult, mode ontology.Mode, docPath pathutil.Path, field string, message string) {
