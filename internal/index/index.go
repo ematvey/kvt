@@ -12,7 +12,8 @@ import (
 )
 
 type Options struct {
-	EnableVector bool
+	EnableVector    bool
+	VectorDimension int
 }
 
 type DB struct {
@@ -34,8 +35,9 @@ type IndexedDocument struct {
 }
 
 type Chunk struct {
-	Ordinal int
-	Text    string
+	Ordinal   int
+	Text      string
+	EmbedText string
 }
 
 type Link struct {

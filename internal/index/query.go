@@ -3,9 +3,12 @@ package index
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 )
+
+var ErrVectorUnavailable = errors.New("vector search unavailable")
 
 type ListRequest struct {
 	Type       string
@@ -32,6 +35,34 @@ type GrepRequest struct {
 	Query      string
 	PathPrefix string
 	Limit      int
+}
+
+type SearchRequest struct {
+	Query      string
+	PathPrefix string
+	Limit      int
+}
+
+type SearchHit struct {
+	Path    string
+	Title   string
+	Type    string
+	Ordinal int
+	Snippet string
+	Text    string
+	Score   float64
+}
+
+type VectorRequest struct {
+	Embedding  []float32
+	PathPrefix string
+	Limit      int
+}
+
+type ChunkEmbedding struct {
+	Ordinal   int
+	Vector    []float32
+	UpdatedAt string
 }
 
 type GrepMatch struct {
@@ -182,6 +213,104 @@ func (db *DB) Backlinks(ctx context.Context, docPath string) ([]Link, error) {
 	return links, rows.Err()
 }
 
+func (db *DB) SearchKeywords(ctx context.Context, req SearchRequest) ([]SearchHit, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(req.Query) == "" {
+		return nil, fmt.Errorf("query is required")
+	}
+
+	query := `
+		SELECT f.path, d.title, d.type, CAST(f.ordinal AS INTEGER), snippet(kb_fts, 3, '', '', ' ... ', 16), c.text, bm25(kb_fts)
+		FROM kb_fts f
+		JOIN kb_docs d ON d.path = f.path
+		JOIN kb_chunks c ON c.path = f.path AND c.ordinal = CAST(f.ordinal AS INTEGER)
+		WHERE kb_fts MATCH ?
+	`
+	args := []any{req.Query}
+	if req.PathPrefix != "" {
+		query += " AND f.path LIKE ?"
+		args = append(args, req.PathPrefix+"%")
+	}
+	query += " ORDER BY bm25(kb_fts), f.path ASC, CAST(f.ordinal AS INTEGER) ASC"
+	query += fmt.Sprintf(" LIMIT %d", normalizeLimit(req.Limit, 20))
+
+	rows, err := db.sql.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	hits := []SearchHit{}
+	for rows.Next() {
+		var hit SearchHit
+		if err := rows.Scan(&hit.Path, &hit.Title, &hit.Type, &hit.Ordinal, &hit.Snippet, &hit.Text, &hit.Score); err != nil {
+			return nil, err
+		}
+		hit.Score = -hit.Score
+		if strings.TrimSpace(hit.Snippet) == "" {
+			hit.Snippet = hit.Text
+		}
+		hits = append(hits, hit)
+	}
+	return hits, rows.Err()
+}
+
+func (db *DB) SearchVector(context.Context, VectorRequest) ([]SearchHit, error) {
+	if !db.vecAvailable {
+		return nil, ErrVectorUnavailable
+	}
+	return nil, ErrVectorUnavailable
+}
+
+func (db *DB) UpsertEmbeddings(ctx context.Context, docPath string, chunks []ChunkEmbedding) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if !db.vecAvailable {
+		return ErrVectorUnavailable
+	}
+
+	tx, err := db.sql.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.ExecContext(ctx, `DELETE FROM kb_vec WHERE path = ?`, docPath); err != nil {
+		return err
+	}
+	for _, chunk := range chunks {
+		if len(chunk.Vector) == 0 {
+			continue
+		}
+		chunkID := fmt.Sprintf("%s#%d", docPath, chunk.Ordinal)
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO kb_vec(chunk_id, path, ordinal, embedding) VALUES(?, ?, ?, ?)
+		`, chunkID, docPath, chunk.Ordinal, vectorLiteral(chunk.Vector)); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+func (db *DB) MarkEmbeddingState(ctx context.Context, docPath string, state string, lastError string, updatedAt string) error {
+	_, err := db.sql.ExecContext(ctx, `
+		INSERT INTO kb_doc_embeddings(path, state, last_error, updated_at)
+		VALUES(?, ?, ?, ?)
+		ON CONFLICT(path) DO UPDATE SET
+			state = excluded.state,
+			last_error = excluded.last_error,
+			updated_at = excluded.updated_at
+	`, docPath, state, lastError, updatedAt)
+	return err
+}
+
+func (db *DB) VectorAvailable() bool {
+	return db.vecAvailable
+}
+
 func (db *DB) Summary(ctx context.Context, _ SummaryRequest) (SummaryResponse, error) {
 	if err := ctx.Err(); err != nil {
 		return SummaryResponse{}, err
@@ -230,4 +359,12 @@ func (db *DB) Summary(ctx context.Context, _ SummaryRequest) (SummaryResponse, e
 		return SummaryResponse{}, err
 	}
 	return resp, nil
+}
+
+func vectorLiteral(vector []float32) string {
+	parts := make([]string, 0, len(vector))
+	for _, value := range vector {
+		parts = append(parts, fmt.Sprintf("%g", value))
+	}
+	return "[" + strings.Join(parts, ",") + "]"
 }

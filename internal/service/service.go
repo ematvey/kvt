@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path"
@@ -10,15 +11,19 @@ import (
 	"time"
 
 	"github.com/ematvey/kvt/internal/config"
+	"github.com/ematvey/kvt/internal/embed"
 	"github.com/ematvey/kvt/internal/frontmatter"
 	"github.com/ematvey/kvt/internal/gitops"
 	"github.com/ematvey/kvt/internal/index"
 	"github.com/ematvey/kvt/internal/ontology"
 	"github.com/ematvey/kvt/internal/pathutil"
+	"github.com/ematvey/kvt/internal/rerank"
 )
 
 type Deps struct {
-	Now func() time.Time
+	Now      func() time.Time
+	Embedder embed.Embedder
+	Reranker rerank.Reranker
 }
 
 type Service struct {
@@ -27,8 +32,11 @@ type Service struct {
 	git           gitops.Client
 	index         *index.DB
 	now           func() time.Time
+	embedder      embed.Embedder
+	reranker      rerank.Reranker
 	writerMu      sync.Mutex
 	lastTimestamp time.Time
+	embedQueue    chan embeddingJob
 }
 
 type conceptState struct {
@@ -46,6 +54,12 @@ type preparedDocument struct {
 	warnings  []ontology.Issue
 }
 
+type embeddingJob struct {
+	path      string
+	timestamp string
+	chunks    []index.Chunk
+}
+
 func New(root string, cfg config.Config, deps Deps) (*Service, error) {
 	root = strings.TrimSpace(root)
 	if root == "" {
@@ -58,17 +72,35 @@ func New(root string, cfg config.Config, deps Deps) (*Service, error) {
 	if err := os.MkdirAll(filepath.Join(root, ".kvt"), 0o755); err != nil {
 		return nil, err
 	}
-	indexDB, err := index.Open(filepath.Join(root, ".kvt", "index.db"), index.Options{})
+	embedder := deps.Embedder
+	if embedder == nil {
+		embedder = buildEmbedder(cfg)
+	}
+	reranker := deps.Reranker
+	if reranker == nil {
+		reranker = buildReranker(cfg)
+	}
+	indexDB, err := index.Open(filepath.Join(root, ".kvt", "index.db"), index.Options{
+		EnableVector:    embedder != nil,
+		VectorDimension: cfg.Embedder.Dimensions,
+	})
 	if err != nil {
 		return nil, err
 	}
-	return &Service{
-		root:  root,
-		cfg:   cfg,
-		git:   gitops.New(root),
-		index: indexDB,
-		now:   now,
-	}, nil
+	svc := &Service{
+		root:     root,
+		cfg:      cfg,
+		git:      gitops.New(root),
+		index:    indexDB,
+		now:      now,
+		embedder: embedder,
+		reranker: reranker,
+	}
+	if embedder != nil && indexDB.VectorAvailable() {
+		svc.embedQueue = make(chan embeddingJob, 64)
+		go svc.runEmbeddingWorker()
+	}
+	return svc, nil
 }
 
 func normalizeConceptPath(raw string) (pathutil.Path, error) {
@@ -256,6 +288,97 @@ func (s *Service) refTargetDocument(docPath pathutil.Path, doc frontmatter.Docum
 		return frontmatter.Document{}, err
 	}
 	return targetDoc, nil
+}
+
+func buildEmbedder(cfg config.Config) embed.Embedder {
+	switch strings.ToLower(strings.TrimSpace(cfg.Embedder.Type)) {
+	case "", "off", "disabled":
+		return nil
+	case "openai", "openai-compatible":
+		return embed.NewOpenAICompatible(
+			cfg.Embedder.BaseURL,
+			cfg.Embedder.Model,
+			os.Getenv(strings.TrimSpace(cfg.Embedder.APIKeyEnv)),
+			cfg.Embedder.Dimensions,
+		)
+	case "ollama":
+		return embed.NewOllama(cfg.Embedder.BaseURL, cfg.Embedder.Model, cfg.Embedder.Dimensions)
+	default:
+		return nil
+	}
+}
+
+func buildReranker(cfg config.Config) rerank.Reranker {
+	if !cfg.Search.Rerank {
+		return nil
+	}
+	if strings.TrimSpace(cfg.LLM.BaseURL) == "" || strings.TrimSpace(cfg.LLM.Model) == "" {
+		return nil
+	}
+	return rerank.NewOpenAICompatible(
+		cfg.LLM.BaseURL,
+		cfg.LLM.Model,
+		os.Getenv(strings.TrimSpace(cfg.LLM.APIKeyEnv)),
+	)
+}
+
+func (s *Service) enqueueEmbedding(doc preparedDocument) {
+	if s.embedQueue == nil {
+		return
+	}
+	job := embeddingJob{
+		path:      doc.indexed.Path,
+		timestamp: doc.timestamp,
+		chunks:    append([]index.Chunk(nil), doc.indexed.Chunks...),
+	}
+	select {
+	case s.embedQueue <- job:
+	default:
+		_ = s.index.MarkEmbeddingState(context.Background(), doc.indexed.Path, "failed", "embedding queue full", doc.timestamp)
+	}
+}
+
+func (s *Service) runEmbeddingWorker() {
+	for job := range s.embedQueue {
+		texts := make([]string, 0, len(job.chunks))
+		ordinals := make([]int, 0, len(job.chunks))
+		for _, chunk := range job.chunks {
+			text := strings.TrimSpace(chunk.EmbedText)
+			if text == "" {
+				text = strings.TrimSpace(chunk.Text)
+			}
+			if text == "" {
+				continue
+			}
+			texts = append(texts, text)
+			ordinals = append(ordinals, chunk.Ordinal)
+		}
+		if len(texts) == 0 {
+			_ = s.index.MarkEmbeddingState(context.Background(), job.path, "ready", "", job.timestamp)
+			continue
+		}
+		vectors, err := s.embedder.Embed(context.Background(), texts)
+		if err != nil {
+			_ = s.index.MarkEmbeddingState(context.Background(), job.path, "failed", err.Error(), job.timestamp)
+			continue
+		}
+		payload := make([]index.ChunkEmbedding, 0, len(vectors))
+		for i, vector := range vectors {
+			if i >= len(ordinals) {
+				break
+			}
+			payload = append(payload, index.ChunkEmbedding{
+				Ordinal:   ordinals[i],
+				Vector:    vector,
+				UpdatedAt: job.timestamp,
+			})
+		}
+		if err := s.index.UpsertEmbeddings(context.Background(), job.path, payload); err != nil {
+			_ = s.index.MarkEmbeddingState(context.Background(), job.path, "failed", err.Error(), job.timestamp)
+			continue
+		}
+		_ = s.index.MarkEmbeddingState(context.Background(), job.path, "ready", "", job.timestamp)
+	}
 }
 
 func addValidationIssue(result *ontology.ValidationResult, mode ontology.Mode, docPath pathutil.Path, field string, message string) {

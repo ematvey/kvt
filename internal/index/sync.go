@@ -32,10 +32,24 @@ func (db *DB) ApplyDocument(ctx context.Context, doc IndexedDocument) error {
 	`, doc.Path, doc.Hash, doc.Title, doc.Type, doc.Description, doc.Timestamp); err != nil {
 		return err
 	}
+	state := "disabled"
+	if db.vecAvailable {
+		state = "pending"
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO kb_doc_embeddings(path, state, last_error, updated_at)
+		VALUES(?, ?, '', ?)
+		ON CONFLICT(path) DO UPDATE SET
+			state = excluded.state,
+			last_error = excluded.last_error,
+			updated_at = excluded.updated_at
+	`, doc.Path, state, doc.Timestamp); err != nil {
+		return err
+	}
 	for _, chunk := range doc.Chunks {
 		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO kb_chunks(path, ordinal, text) VALUES(?, ?, ?)
-		`, doc.Path, chunk.Ordinal, chunk.Text); err != nil {
+			INSERT INTO kb_chunks(path, ordinal, text, embed_text) VALUES(?, ?, ?, ?)
+		`, doc.Path, chunk.Ordinal, chunk.Text, chunk.EmbedText); err != nil {
 			return err
 		}
 		if _, err := tx.ExecContext(ctx, `
@@ -92,6 +106,7 @@ func deletePathRows(ctx context.Context, tx interface {
 		`DELETE FROM kb_chunks WHERE path = ?`,
 		`DELETE FROM kb_fts WHERE path = ?`,
 		`DELETE FROM kb_fields WHERE path = ?`,
+		`DELETE FROM kb_doc_embeddings WHERE path = ?`,
 		`DELETE FROM kb_links WHERE from_path = ?`,
 	}
 	if removeInbound {

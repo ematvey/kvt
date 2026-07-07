@@ -86,6 +86,25 @@ type DeleteResponse struct {
 	Commit       CommitInfo
 }
 
+type SearchRequest struct {
+	Query      string
+	PathPrefix string
+	Limit      int
+}
+
+type SearchHit struct {
+	Path    string
+	Title   string
+	Type    string
+	Snippet string
+	Score   float64
+}
+
+type SearchResponse struct {
+	Hits     []SearchHit
+	Degraded []string
+}
+
 type ValidateResponse struct {
 	Errors   []ontology.Issue
 	Warnings []ontology.Issue

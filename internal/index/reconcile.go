@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ematvey/kvt/internal/chunk"
 	"github.com/ematvey/kvt/internal/frontmatter"
 	"github.com/ematvey/kvt/internal/ontology"
 	"github.com/ematvey/kvt/internal/pathutil"
@@ -148,7 +149,7 @@ func BuildIndexedDocument(schema ontology.Schema, docPath pathutil.Path, doc fro
 		Description: description,
 		Timestamp:   timestamp,
 		Fields:      extractFields(doc.Fields),
-		Chunks:      buildChunks(doc, title, typ, description),
+		Chunks:      buildChunks(docPath.String(), doc, title, typ, description),
 		Links:       indexLinks,
 	}
 }
@@ -191,50 +192,84 @@ func extractFields(fields map[string]any) map[string][]string {
 	return out
 }
 
-func buildChunks(doc frontmatter.Document, title string, typ string, description string) []Chunk {
-	chunks := []Chunk{}
-	headerParts := []string{}
-	if title != "" {
-		headerParts = append(headerParts, title)
+func buildChunks(docPath string, doc frontmatter.Document, title string, typ string, description string) []Chunk {
+	source := chunk.Document{
+		Path:            docPath,
+		Title:           title,
+		Type:            typ,
+		Description:     description,
+		FrontmatterText: frontmatterText(doc.Fields),
+		Body:            strings.TrimSpace(string(doc.Body)),
 	}
-	if typ != "" {
-		headerParts = append(headerParts, typ)
+	split, err := chunk.Split(source)
+	if err != nil {
+		fallback := strings.TrimSpace(strings.Join(nonEmptyLines(source.FrontmatterText, source.Body), "\n\n"))
+		if fallback == "" {
+			return nil
+		}
+		return []Chunk{{
+			Ordinal:   0,
+			Text:      fallback,
+			EmbedText: fallback,
+		}}
 	}
-	if description != "" {
-		headerParts = append(headerParts, description)
-	}
-	if len(headerParts) > 0 {
-		chunks = append(chunks, Chunk{
-			Ordinal: len(chunks),
-			Text:    strings.Join(headerParts, " "),
+
+	out := make([]Chunk, 0, len(split))
+	for _, item := range split {
+		out = append(out, Chunk{
+			Ordinal:   item.Ordinal,
+			Text:      item.Text,
+			EmbedText: item.EmbedText,
 		})
 	}
-
-	body := strings.TrimSpace(string(doc.Body))
-	if body != "" {
-		sections := splitBodyChunks(body)
-		for _, section := range sections {
-			chunks = append(chunks, Chunk{
-				Ordinal: len(chunks),
-				Text:    section,
-			})
-		}
-	}
-	return chunks
+	return out
 }
 
-func splitBodyChunks(body string) []string {
-	parts := strings.Split(body, "\n\n")
-	chunks := make([]string, 0, len(parts))
-	for _, part := range parts {
-		part = strings.TrimSpace(part)
-		if part == "" {
-			continue
+func frontmatterText(fields map[string]any) string {
+	if len(fields) == 0 {
+		return ""
+	}
+	keys := make([]string, 0, len(fields))
+	for key := range fields {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+
+	lines := make([]string, 0, len(keys))
+	for _, key := range keys {
+		switch value := fields[key].(type) {
+		case string:
+			value = strings.TrimSpace(value)
+			if value != "" {
+				lines = append(lines, key+": "+value)
+			}
+		case []string:
+			if len(value) > 0 {
+				lines = append(lines, key+": "+strings.Join(value, ", "))
+			}
+		case []any:
+			items := []string{}
+			for _, item := range value {
+				text, ok := item.(string)
+				if ok && strings.TrimSpace(text) != "" {
+					items = append(items, strings.TrimSpace(text))
+				}
+			}
+			if len(items) > 0 {
+				lines = append(lines, key+": "+strings.Join(items, ", "))
+			}
 		}
-		chunks = append(chunks, strings.Join(strings.Fields(part), " "))
 	}
-	if len(chunks) == 0 && strings.TrimSpace(body) != "" {
-		return []string{strings.Join(strings.Fields(body), " ")}
+	return strings.Join(lines, "\n")
+}
+
+func nonEmptyLines(items ...string) []string {
+	out := make([]string, 0, len(items))
+	for _, item := range items {
+		item = strings.TrimSpace(item)
+		if item != "" {
+			out = append(out, item)
+		}
 	}
-	return chunks
+	return out
 }

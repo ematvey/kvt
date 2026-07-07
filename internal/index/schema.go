@@ -21,6 +21,7 @@ CREATE TABLE IF NOT EXISTS kb_chunks (
 	path TEXT NOT NULL,
 	ordinal INTEGER NOT NULL,
 	text TEXT NOT NULL,
+	embed_text TEXT NOT NULL DEFAULT '',
 	PRIMARY KEY (path, ordinal)
 );
 
@@ -54,10 +55,21 @@ CREATE TABLE IF NOT EXISTS kb_meta (
 	key TEXT PRIMARY KEY,
 	value TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS kb_doc_embeddings (
+	path TEXT PRIMARY KEY,
+	state TEXT NOT NULL,
+	last_error TEXT NOT NULL,
+	updated_at TEXT NOT NULL,
+	FOREIGN KEY(path) REFERENCES kb_docs(path) ON DELETE CASCADE
+);
 `
 
 func (db *DB) init(opts Options) error {
 	if _, err := db.sql.Exec(baseSchema); err != nil {
+		return err
+	}
+	if err := db.ensureColumn("kb_chunks", "embed_text", "ALTER TABLE kb_chunks ADD COLUMN embed_text TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err
 	}
 	if err := db.setMeta(context.Background(), "schema_version", "1"); err != nil {
@@ -84,7 +96,15 @@ func (db *DB) initVectorSupport(opts Options) error {
 		return nil
 	}
 
-	if _, err := db.sql.Exec(`CREATE VIRTUAL TABLE IF NOT EXISTS kb_vec USING vec0(path text primary key, embedding float[1])`); err != nil {
+	dimension := opts.VectorDimension
+	if dimension <= 0 {
+		dimension = 1
+	}
+	statement := fmt.Sprintf(
+		`CREATE VIRTUAL TABLE IF NOT EXISTS kb_vec USING vec0(chunk_id text primary key, path text, ordinal integer, embedding float[%d])`,
+		dimension,
+	)
+	if _, err := db.sql.Exec(statement); err != nil {
 		status := "unavailable: " + err.Error()
 		db.vecStatus = status
 		if metaErr := db.setMeta(context.Background(), "vec_status", status); metaErr != nil {
@@ -127,4 +147,32 @@ func required(value string, field string) error {
 		return fmt.Errorf("%s is required", field)
 	}
 	return nil
+}
+
+func (db *DB) ensureColumn(table string, column string, alter string) error {
+	rows, err := db.sql.Query(fmt.Sprintf("PRAGMA table_info(%s)", table))
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var cid int
+		var name string
+		var typ string
+		var notNull int
+		var dflt any
+		var pk int
+		if err := rows.Scan(&cid, &name, &typ, &notNull, &dflt, &pk); err != nil {
+			return err
+		}
+		if name == column {
+			return nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	_, err = db.sql.Exec(alter)
+	return err
 }
