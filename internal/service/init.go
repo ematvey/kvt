@@ -20,14 +20,6 @@ import (
 
 const rootOKFVersion = "0.1"
 
-type Deps struct{}
-
-type Service struct {
-	root string
-	cfg  config.Config
-	git  gitops.Client
-}
-
 type InitRequest struct {
 	VaultPath string
 	Defaults  bool
@@ -36,17 +28,6 @@ type InitRequest struct {
 type InitResult struct {
 	Branch  string
 	Created bool
-}
-
-func New(root string, cfg config.Config, deps Deps) (*Service, error) {
-	if strings.TrimSpace(root) == "" {
-		return nil, fmt.Errorf("vault root is required")
-	}
-	return &Service{
-		root: root,
-		cfg:  cfg,
-		git:  gitops.New(root),
-	}, nil
 }
 
 func Init(ctx context.Context, req InitRequest) (result InitResult, err error) {

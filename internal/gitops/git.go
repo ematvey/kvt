@@ -321,7 +321,20 @@ func isRuntimePath(path string) bool {
 
 func scopedPathspec(paths []string) []string {
 	pathspec := append([]string{}, paths...)
-	return append(pathspec, ":(exclude).kvt", ":(exclude).kvt/**")
+	if needsRuntimeExcludes(paths) {
+		return append(pathspec, ":(exclude).kvt", ":(exclude).kvt/**")
+	}
+	return pathspec
+}
+
+func needsRuntimeExcludes(paths []string) bool {
+	for _, path := range paths {
+		normalized := strings.TrimPrefix(strings.ReplaceAll(path, "\\", "/"), "./")
+		if path == "." || normalized == "." || normalized == "" {
+			return true
+		}
+	}
+	return false
 }
 
 func (c Client) diffCached(paths []string) (string, error) {

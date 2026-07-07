@@ -103,6 +103,25 @@ func TestCommitWithPathsDoesNotAdoptPreStagedUnrelatedFiles(t *testing.T) {
 	}
 }
 
+func TestCommitWithPathsSupportsNewFiles(t *testing.T) {
+	root := initRepoWithCommit(t)
+	writeFile(t, filepath.Join(root, "people", "bob.md"), "---\ntype: Person\ntitle: Bob\n---\nBody\n")
+
+	result, err := Commit(root, CommitOptions{
+		Message: "add bob",
+		Paths:   []string{"people/bob.md"},
+	})
+	if err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+	if !result.Changed {
+		t.Fatalf("expected commit to report changes")
+	}
+	if got := gitOutput(t, root, "show", "--pretty=format:", "--name-only", "HEAD"); got != "people/bob.md\n" {
+		t.Fatalf("head files = %q", got)
+	}
+}
+
 func TestCommitWithPathsIgnoresUnrelatedCachedChangesWhenTargetsAreUnchanged(t *testing.T) {
 	root := initRepoWithCommit(t)
 	writeFile(t, filepath.Join(root, "b.md"), "---\ntype: Note\ntitle: B\n---\nB\n")
