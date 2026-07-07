@@ -194,6 +194,7 @@ func TestInitAdoptionRejectsInvalidMarkdownPaths(t *testing.T) {
 	if _, err := Init(t.Context(), InitRequest{VaultPath: root, Defaults: true}); err == nil || !strings.Contains(err.Error(), "People/Alice.md") {
 		t.Fatalf("Init err = %v", err)
 	}
+	assertNoInitSupportFiles(t, root)
 }
 
 func TestInitAdoptionRejectsInvalidNestedIndexPath(t *testing.T) {
@@ -209,6 +210,7 @@ func TestInitAdoptionRejectsInvalidNestedIndexPath(t *testing.T) {
 	if _, err := Init(t.Context(), InitRequest{VaultPath: root, Defaults: true}); err == nil || !strings.Contains(err.Error(), "People/index.md") {
 		t.Fatalf("Init err = %v", err)
 	}
+	assertNoInitSupportFiles(t, root)
 }
 
 func TestInitIsIdempotent(t *testing.T) {
@@ -359,6 +361,17 @@ func readFile(t *testing.T, path string) string {
 		t.Fatalf("read %s: %v", path, err)
 	}
 	return string(data)
+}
+
+func assertNoInitSupportFiles(t *testing.T, root string) {
+	t.Helper()
+	for _, path := range []string{".gitignore", "_ontology.yaml", "index.md", ".kvt/config.yaml"} {
+		if _, err := os.Stat(filepath.Join(root, path)); err == nil {
+			t.Fatalf("unexpected support file after rejected init: %s", path)
+		} else if !os.IsNotExist(err) {
+			t.Fatalf("stat %s: %v", path, err)
+		}
+	}
 }
 
 func gitConfigValue(t *testing.T, root string, key string) (string, bool) {
