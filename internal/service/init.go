@@ -48,7 +48,7 @@ func New(root string, cfg config.Config, deps Deps) (*Service, error) {
 	}, nil
 }
 
-func Init(ctx context.Context, req InitRequest) (InitResult, error) {
+func Init(ctx context.Context, req InitRequest) (result InitResult, err error) {
 	_ = ctx
 	root := strings.TrimSpace(req.VaultPath)
 	if root == "" {
@@ -57,6 +57,16 @@ func Init(ctx context.Context, req InitRequest) (InitResult, error) {
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		return InitResult{}, err
 	}
+	lock, err := AcquireVaultLock(root)
+	if err != nil {
+		return InitResult{}, err
+	}
+	defer func() {
+		releaseErr := lock.Release()
+		if err == nil && releaseErr != nil {
+			err = releaseErr
+		}
+	}()
 
 	hasGit, err := hasGitRepo(root)
 	if err != nil {
@@ -130,12 +140,8 @@ func ensureVaultFiles(root string, branch string) ([]string, error) {
 		changedPaths = append(changedPaths, ".gitignore")
 	}
 
-	fileChanged, err = ensureDefaultConfig(root, branch)
-	if err != nil {
+	if _, err = ensureDefaultConfig(root, branch); err != nil {
 		return nil, err
-	}
-	if fileChanged {
-		changedPaths = append(changedPaths, filepath.ToSlash(filepath.Join(".kvt", "config.yaml")))
 	}
 
 	fileChanged, err = ensureStarterOntology(root)
@@ -289,7 +295,13 @@ func isEmptyDir(root string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	return len(entries) == 0, nil
+	for _, entry := range entries {
+		if entry.Name() == ".kvt" {
+			continue
+		}
+		return false, nil
+	}
+	return true, nil
 }
 
 func appendUniquePaths(paths []string, more ...string) []string {

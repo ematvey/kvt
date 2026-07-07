@@ -78,6 +78,57 @@ func TestCommitStagesChangesAndSetsAuthor(t *testing.T) {
 	}
 }
 
+func TestCommitWithPathsDoesNotAdoptPreStagedUnrelatedFiles(t *testing.T) {
+	root := initRepoWithCommit(t)
+	writeFile(t, filepath.Join(root, "a.md"), "---\ntype: Note\ntitle: A\n---\nScoped\n")
+	writeFile(t, filepath.Join(root, "b.md"), "---\ntype: Note\ntitle: B\n---\nB\n")
+	runGit(t, root, "add", "b.md")
+
+	result, err := Commit(root, CommitOptions{
+		Message: "update a only",
+		Paths:   []string{"a.md"},
+	})
+	if err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+	if !result.Changed {
+		t.Fatalf("expected commit to report changes")
+	}
+
+	if got := gitOutput(t, root, "show", "--pretty=format:", "--name-only", "HEAD"); got != "a.md\n" {
+		t.Fatalf("head files = %q", got)
+	}
+	if got := gitOutput(t, root, "diff", "--cached", "--name-only"); got != "b.md\n" {
+		t.Fatalf("cached diff = %q", got)
+	}
+}
+
+func TestCommitWithPathsIgnoresUnrelatedCachedChangesWhenTargetsAreUnchanged(t *testing.T) {
+	root := initRepoWithCommit(t)
+	writeFile(t, filepath.Join(root, "b.md"), "---\ntype: Note\ntitle: B\n---\nB\n")
+	runGit(t, root, "add", "b.md")
+
+	headBefore := strings.TrimSpace(gitOutput(t, root, "rev-parse", "HEAD"))
+	result, err := Commit(root, CommitOptions{
+		Message: "should not commit",
+		Paths:   []string{"a.md"},
+	})
+	if err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+	if result.Changed {
+		t.Fatalf("expected no path-scoped changes, got %#v", result)
+	}
+
+	headAfter := strings.TrimSpace(gitOutput(t, root, "rev-parse", "HEAD"))
+	if headAfter != headBefore {
+		t.Fatalf("head changed from %q to %q", headBefore, headAfter)
+	}
+	if got := gitOutput(t, root, "diff", "--cached", "--name-only"); got != "b.md\n" {
+		t.Fatalf("cached diff = %q", got)
+	}
+}
+
 func TestLogReturnsTerseEntries(t *testing.T) {
 	root := initRepoWithCommit(t)
 

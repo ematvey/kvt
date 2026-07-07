@@ -122,7 +122,7 @@ func (c Client) Commit(opts CommitOptions) (CommitResult, error) {
 	if err := c.add(opts.Paths); err != nil {
 		return CommitResult{}, err
 	}
-	diff, err := c.diffCached()
+	diff, err := c.diffCached(opts.Paths)
 	if err != nil {
 		return CommitResult{}, err
 	}
@@ -138,6 +138,10 @@ func (c Client) Commit(opts CommitOptions) (CommitResult, error) {
 	args := []string{"commit", "-m", opts.Message}
 	if strings.TrimSpace(opts.Body) != "" {
 		args = append(args, "-m", opts.Body)
+	}
+	if len(opts.Paths) > 0 {
+		args = append(args, "--")
+		args = append(args, opts.Paths...)
 	}
 	env := authorEnv(opts)
 	if _, err := c.run(context.Background(), env, args...); err != nil {
@@ -302,8 +306,13 @@ func (c Client) add(paths []string) error {
 	return nil
 }
 
-func (c Client) diffCached() (string, error) {
-	return c.run(context.Background(), nil, "diff", "--cached", "--name-only")
+func (c Client) diffCached(paths []string) (string, error) {
+	args := []string{"diff", "--cached", "--name-only"}
+	if len(paths) > 0 {
+		args = append(args, "--")
+		args = append(args, paths...)
+	}
+	return c.run(context.Background(), nil, args...)
 }
 
 func (c Client) showPathCommit(hash string, path string) (HistoryEntry, error) {

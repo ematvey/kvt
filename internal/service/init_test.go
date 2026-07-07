@@ -34,6 +34,22 @@ func TestInitEmptyVaultCreatesMainCommitAndConfig(t *testing.T) {
 	}
 }
 
+func TestInitEmptyVaultLeavesRuntimeConfigUntracked(t *testing.T) {
+	testutil.RequireGit(t)
+	root := t.TempDir()
+
+	if _, err := Init(t.Context(), InitRequest{VaultPath: root, Defaults: true}); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	if got := gitOutputAllowExit1(t, root, "ls-files", "--cached", "--", ".kvt/config.yaml"); got != "" {
+		t.Fatalf("config tracked = %q", got)
+	}
+	if got := gitOutput(t, root, "check-ignore", ".kvt/config.yaml"); got != ".kvt/config.yaml\n" {
+		t.Fatalf("check-ignore = %q", got)
+	}
+}
+
 func TestInitAdoptsExistingGitRepoWithoutRewritingTrackedContent(t *testing.T) {
 	testutil.RequireGit(t)
 	root := t.TempDir()
@@ -98,6 +114,32 @@ func TestInitAdoptionCommitsOnlyKVTFilesWhenRepoIsDirty(t *testing.T) {
 	}
 }
 
+func TestInitAdoptionDoesNotCommitPreStagedUnrelatedFiles(t *testing.T) {
+	testutil.RequireGit(t)
+	root := t.TempDir()
+	runGit(t, root, "init", "-b", "trunk")
+	runGit(t, root, "config", "user.name", "test")
+	runGit(t, root, "config", "user.email", "test@example.com")
+	writeFile(t, filepath.Join(root, "notes", "existing.md"), "---\ntype: Note\ntitle: Existing\n---\nBody\n")
+	writeFile(t, filepath.Join(root, "README.txt"), "seed\n")
+	runGit(t, root, "add", ".")
+	runGit(t, root, "commit", "-m", "seed")
+
+	writeFile(t, filepath.Join(root, "README.txt"), "user staged change\n")
+	runGit(t, root, "add", "README.txt")
+
+	if _, err := Init(t.Context(), InitRequest{VaultPath: root, Defaults: true}); err != nil {
+		t.Fatalf("Init adopt: %v", err)
+	}
+
+	if got := gitOutput(t, root, "show", "--pretty=format:", "--name-only", "HEAD"); strings.Contains(got, "README.txt") {
+		t.Fatalf("init commit included unrelated staged file: %q", got)
+	}
+	if got := gitOutput(t, root, "diff", "--cached", "--name-only"); got != "README.txt\n" {
+		t.Fatalf("cached diff = %q", got)
+	}
+}
+
 func TestInitFreshVaultDoesNotPersistRepoIdentity(t *testing.T) {
 	testutil.RequireGit(t)
 	root := t.TempDir()
@@ -154,6 +196,41 @@ func TestInitIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestInitFailsWhenVaultIsLocked(t *testing.T) {
+	root := t.TempDir()
+
+	lock, err := AcquireVaultLock(root)
+	if err != nil {
+		t.Fatalf("AcquireVaultLock: %v", err)
+	}
+	defer func() {
+		if err := lock.Release(); err != nil {
+			t.Fatalf("Release: %v", err)
+		}
+	}()
+
+	if _, err := Init(t.Context(), InitRequest{VaultPath: root, Defaults: true}); !errors.Is(err, ErrVaultLocked) {
+		t.Fatalf("Init err = %v", err)
+	}
+}
+
+func TestInitReleasesVaultLockOnSuccess(t *testing.T) {
+	testutil.RequireGit(t)
+	root := t.TempDir()
+
+	if _, err := Init(t.Context(), InitRequest{VaultPath: root, Defaults: true}); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, ".kvt", "lock")); !os.IsNotExist(err) {
+		t.Fatalf("lock stat err = %v", err)
+	}
+	if lock, err := AcquireVaultLock(root); err != nil {
+		t.Fatalf("AcquireVaultLock after init: %v", err)
+	} else if err := lock.Release(); err != nil {
+		t.Fatalf("Release after init: %v", err)
+	}
+}
+
 func TestAcquireVaultLockIsExclusiveAndWritesMetadata(t *testing.T) {
 	root := t.TempDir()
 
@@ -194,6 +271,22 @@ func gitOutput(t *testing.T, root string, args ...string) string {
 		t.Fatalf("git %s: %v", strings.Join(args, " "), err)
 	}
 	return string(out)
+}
+
+func gitOutputAllowExit1(t *testing.T, root string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = root
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		return string(out)
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+		return string(out)
+	}
+	t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, out)
+	return ""
 }
 
 func newInitializedService(t *testing.T) *Service {
