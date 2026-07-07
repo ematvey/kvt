@@ -228,6 +228,32 @@ func TestWriteAdvisoryValidationReturnsWarningsAndCommits(t *testing.T) {
 	}
 }
 
+func TestWriteDoesNotEnqueueEmbeddingWhenCommitFails(t *testing.T) {
+	testutil.RequireGit(t)
+	h := newServiceHarness(t)
+	h.service.embedQueue = make(chan embeddingJob, 1)
+
+	lockPath := filepath.Join(h.root, ".git", "index.lock")
+	if err := os.WriteFile(lockPath, []byte("locked"), 0o644); err != nil {
+		t.Fatalf("write git lock: %v", err)
+	}
+	defer os.Remove(lockPath)
+
+	_, err := h.service.Write(t.Context(), WriteRequest{
+		Path:    "notes/uncommitted.md",
+		Content: "---\ntype: Note\ntitle: Uncommitted\n---\nBody\n",
+		Agent:   "test-agent",
+	})
+	if err == nil {
+		t.Fatalf("expected commit failure")
+	}
+	select {
+	case job := <-h.service.embedQueue:
+		t.Fatalf("queued embedding for failed commit: %#v", job)
+	default:
+	}
+}
+
 func TestValidateAdvisoryModeReturnsErrorsAsWarnings(t *testing.T) {
 	testutil.RequireGit(t)
 	h := newServiceHarness(t)

@@ -75,12 +75,25 @@ func (c *openAICompatible) Embed(ctx context.Context, texts []string) ([][]float
 	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
 		return nil, err
 	}
-	vectors := make([][]float32, len(payload.Data))
+	if len(payload.Data) != len(texts) {
+		return nil, fmt.Errorf("openai-compatible embeddings: got %d vectors for %d inputs", len(payload.Data), len(texts))
+	}
+	vectors := make([][]float32, len(texts))
+	seen := make([]bool, len(texts))
 	for _, item := range payload.Data {
 		if item.Index < 0 || item.Index >= len(vectors) {
 			return nil, fmt.Errorf("embedding index %d out of range", item.Index)
 		}
+		if seen[item.Index] {
+			return nil, fmt.Errorf("duplicate embedding index %d", item.Index)
+		}
+		seen[item.Index] = true
 		vectors[item.Index] = item.Embedding
+	}
+	for i, ok := range seen {
+		if !ok {
+			return nil, fmt.Errorf("missing embedding index %d", i)
+		}
 	}
 	if err := validateDimensions(vectors, c.dimensions); err != nil {
 		return nil, err

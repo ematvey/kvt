@@ -117,3 +117,7 @@ func (v vectorSearcher) SearchVector(ctx context.Context, req searchpkg.VectorRe
 	}
 	return out, nil
 }
+
+func (v vectorSearcher) VectorAvailable() bool {
+	return v.db.VectorAvailable()
+}

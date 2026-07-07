@@ -58,6 +58,31 @@ func TestSearchFallsBackToFTSWhenVectorAndRerankDegrade(t *testing.T) {
 	}
 }
 
+func TestSearchSkipsEmbedderWhenVectorUnavailable(t *testing.T) {
+	called := false
+	resp, err := Search(t.Context(), SearchRequest{
+		Query: "primary database",
+		Limit: 5,
+		Keyword: stubKeywordSearcher{hits: []Hit{
+			{DocPath: "systems/db.md", Title: "DB", Snippet: "primary database", Text: "primary database"},
+		}},
+		Vector:   unavailableVectorSearcher{},
+		Embedder: countingEmbedder{called: &called},
+	})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if called {
+		t.Fatalf("embedder was called despite unavailable vector search")
+	}
+	if len(resp.Hits) != 1 || resp.Hits[0].DocPath != "systems/db.md" {
+		t.Fatalf("hits = %#v", resp.Hits)
+	}
+	if !containsDegraded(resp.Degraded, "vector") {
+		t.Fatalf("degraded = %#v", resp.Degraded)
+	}
+}
+
 func containsDegraded(items []string, want string) bool {
 	for _, item := range items {
 		if strings.Contains(strings.ToLower(item), want) {
@@ -85,6 +110,16 @@ func (s stubVectorSearcher) SearchVector(_ context.Context, _ VectorRequest) ([]
 	return s.hits, s.err
 }
 
+type unavailableVectorSearcher struct{}
+
+func (unavailableVectorSearcher) SearchVector(context.Context, VectorRequest) ([]Hit, error) {
+	return nil, errors.New("unexpected vector search")
+}
+
+func (unavailableVectorSearcher) VectorAvailable() bool {
+	return false
+}
+
 type stubEmbedder struct {
 	vectors [][]float32
 	err     error
@@ -101,6 +136,17 @@ func (s stubEmbedder) Embed(_ context.Context, _ []string) ([][]float32, error) 
 }
 
 var _ embed.Embedder = stubEmbedder{}
+
+type countingEmbedder struct {
+	called *bool
+}
+
+func (s countingEmbedder) Embed(_ context.Context, _ []string) ([][]float32, error) {
+	*s.called = true
+	return [][]float32{{1, 0}}, nil
+}
+
+var _ embed.Embedder = countingEmbedder{}
 
 type stubReranker struct {
 	scores []rerank.Score

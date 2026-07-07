@@ -48,12 +48,12 @@ func (s *Service) Write(ctx context.Context, req WriteRequest) (WriteResponse, e
 	if err := s.index.ApplyDocument(ctx, prepared.indexed); err != nil {
 		return WriteResponse{}, err
 	}
-	s.enqueueEmbedding(prepared)
 
 	commit, err := s.commitMutation(fmt.Sprintf("Write %s", docPath.String()), req.Agent, changedPaths)
 	if err != nil {
 		return WriteResponse{}, err
 	}
+	s.enqueueEmbedding(prepared)
 
 	return WriteResponse{
 		Path:         docPath.String(),
@@ -128,12 +128,12 @@ func (s *Service) Edit(ctx context.Context, req EditRequest) (WriteResponse, err
 	if err := s.index.ApplyDocument(ctx, prepared.indexed); err != nil {
 		return WriteResponse{}, err
 	}
-	s.enqueueEmbedding(prepared)
 
 	commit, err := s.commitMutation(fmt.Sprintf("Edit %s", docPath.String()), req.Agent, changedPaths)
 	if err != nil {
 		return WriteResponse{}, err
 	}
+	s.enqueueEmbedding(prepared)
 
 	return WriteResponse{
 		Path:         docPath.String(),

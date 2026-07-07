@@ -47,6 +47,23 @@ func TestOpenAICompatibleEmbedsTexts(t *testing.T) {
 	}
 }
 
+func TestOpenAICompatibleRejectsShortEmbeddingResponse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"data": []map[string]any{
+				{"index": 0, "embedding": []float32{1, 0}},
+			},
+		})
+	}))
+	defer server.Close()
+
+	client := NewOpenAICompatible(server.URL, "test-model", "", 2)
+	_, err := client.Embed(t.Context(), []string{"alpha", "beta"})
+	if err == nil {
+		t.Fatalf("expected short embedding response error")
+	}
+}
+
 func TestOllamaEmbedsTexts(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/embed" {
@@ -80,5 +97,22 @@ func TestOllamaEmbedsTexts(t *testing.T) {
 	want := [][]float32{{0.25, 0.75}, {0.5, 0.5}}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("vectors = %#v, want %#v", got, want)
+	}
+}
+
+func TestOllamaRejectsShortEmbeddingResponse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"embeddings": []any{
+				[]float32{0.25, 0.75},
+			},
+		})
+	}))
+	defer server.Close()
+
+	client := NewOllama(server.URL, "nomic-embed-text", 2)
+	_, err := client.Embed(t.Context(), []string{"alpha", "beta"})
+	if err == nil {
+		t.Fatalf("expected short embedding response error")
 	}
 }

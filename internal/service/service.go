@@ -362,11 +362,18 @@ func (s *Service) runEmbeddingWorker() {
 			_ = s.index.MarkEmbeddingState(context.Background(), job.path, "failed", err.Error(), job.timestamp)
 			continue
 		}
+		if len(vectors) != len(texts) {
+			_ = s.index.MarkEmbeddingState(
+				context.Background(),
+				job.path,
+				"failed",
+				fmt.Sprintf("embedding response count mismatch: got %d vectors for %d chunks", len(vectors), len(texts)),
+				job.timestamp,
+			)
+			continue
+		}
 		payload := make([]index.ChunkEmbedding, 0, len(vectors))
 		for i, vector := range vectors {
-			if i >= len(ordinals) {
-				break
-			}
 			payload = append(payload, index.ChunkEmbedding{
 				Ordinal:   ordinals[i],
 				Vector:    vector,

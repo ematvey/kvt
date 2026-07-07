@@ -72,6 +72,9 @@ func (o *ollama) Embed(ctx context.Context, texts []string) ([][]float32, error)
 	if len(vectors) == 0 && len(payload.Embedding) > 0 {
 		vectors = [][]float32{payload.Embedding}
 	}
+	if len(vectors) != len(texts) {
+		return nil, fmt.Errorf("ollama embeddings: got %d vectors for %d inputs", len(vectors), len(texts))
+	}
 	if err := validateDimensions(vectors, o.dimensions); err != nil {
 		return nil, err
 	}

@@ -257,11 +257,49 @@ func (db *DB) SearchKeywords(ctx context.Context, req SearchRequest) ([]SearchHi
 	return hits, rows.Err()
 }
 
-func (db *DB) SearchVector(context.Context, VectorRequest) ([]SearchHit, error) {
+func (db *DB) SearchVector(ctx context.Context, req VectorRequest) ([]SearchHit, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if !db.vecAvailable {
 		return nil, ErrVectorUnavailable
 	}
-	return nil, ErrVectorUnavailable
+	if len(req.Embedding) == 0 {
+		return nil, fmt.Errorf("embedding is required")
+	}
+
+	limit := normalizeLimit(req.Limit, 20)
+	query := `
+		SELECT v.path, d.title, d.type, CAST(v.ordinal AS INTEGER), c.text, c.text, v.distance
+		FROM kb_vec v
+		JOIN kb_docs d ON d.path = v.path
+		JOIN kb_chunks c ON c.path = v.path AND c.ordinal = CAST(v.ordinal AS INTEGER)
+		WHERE v.embedding MATCH ? AND k = ?
+	`
+	args := []any{vectorLiteral(req.Embedding), limit}
+	if req.PathPrefix != "" {
+		query += " AND v.path LIKE ?"
+		args = append(args, req.PathPrefix+"%")
+	}
+	query += " ORDER BY v.distance ASC, v.path ASC, CAST(v.ordinal AS INTEGER) ASC"
+	query += fmt.Sprintf(" LIMIT %d", limit)
+
+	rows, err := db.sql.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	hits := []SearchHit{}
+	for rows.Next() {
+		var hit SearchHit
+		if err := rows.Scan(&hit.Path, &hit.Title, &hit.Type, &hit.Ordinal, &hit.Snippet, &hit.Text, &hit.Score); err != nil {
+			return nil, err
+		}
+		hit.Score = -hit.Score
+		hits = append(hits, hit)
+	}
+	return hits, rows.Err()
 }
 
 func (db *DB) UpsertEmbeddings(ctx context.Context, docPath string, chunks []ChunkEmbedding) error {

@@ -30,6 +30,10 @@ type VectorSearcher interface {
 	SearchVector(ctx context.Context, req VectorRequest) ([]Hit, error)
 }
 
+type VectorAvailability interface {
+	VectorAvailable() bool
+}
+
 type SearchRequest struct {
 	Query      string
 	PathPrefix string
@@ -81,6 +85,8 @@ func Search(ctx context.Context, req SearchRequest) (SearchResponse, error) {
 	}}
 
 	if req.Vector == nil || req.Embedder == nil {
+		resp.Degraded = append(resp.Degraded, "vector unavailable")
+	} else if availability, ok := req.Vector.(VectorAvailability); ok && !availability.VectorAvailable() {
 		resp.Degraded = append(resp.Degraded, "vector unavailable")
 	} else {
 		vectors, err := req.Embedder.Embed(ctx, []string{req.Query})
