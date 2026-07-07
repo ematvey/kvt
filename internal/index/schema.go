@@ -2,7 +2,10 @@ package index
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
+	"strconv"
+	"strings"
 )
 
 const baseSchema = `
@@ -85,6 +88,10 @@ func (db *DB) initVectorSupport(opts Options) error {
 		db.vecStatus = "unavailable: disabled"
 		return db.setMeta(context.Background(), "vec_status", db.vecStatus)
 	}
+	if opts.VectorDimension <= 0 {
+		db.vecStatus = "unavailable: vector dimension required"
+		return db.setMeta(context.Background(), "vec_status", db.vecStatus)
+	}
 
 	var version string
 	if err := db.sql.QueryRow(`SELECT vec_version()`).Scan(&version); err != nil {
@@ -96,14 +103,20 @@ func (db *DB) initVectorSupport(opts Options) error {
 		return nil
 	}
 
-	dimension := opts.VectorDimension
-	if dimension <= 0 {
-		dimension = 1
+	provenanceChanged, err := db.vectorProvenanceChanged(context.Background(), opts)
+	if err != nil {
+		return err
 	}
-	statement := fmt.Sprintf(
-		`CREATE VIRTUAL TABLE IF NOT EXISTS kb_vec USING vec0(chunk_id text primary key, path text, ordinal integer, embedding float[%d])`,
-		dimension,
-	)
+	if provenanceChanged {
+		if _, err := db.sql.Exec(`DROP TABLE IF EXISTS kb_vec`); err != nil {
+			return err
+		}
+	}
+
+	statement, err := vectorTableStatement(opts.VectorDimension)
+	if err != nil {
+		return err
+	}
 	if _, err := db.sql.Exec(statement); err != nil {
 		status := "unavailable: " + err.Error()
 		db.vecStatus = status
@@ -115,7 +128,65 @@ func (db *DB) initVectorSupport(opts Options) error {
 
 	db.vecAvailable = true
 	db.vecStatus = "available: " + version
+	if err := db.refreshVectorProvenance(context.Background(), opts); err != nil {
+		return err
+	}
 	return db.setMeta(context.Background(), "vec_status", db.vecStatus)
+}
+
+func vectorTableStatement(dimension int) (string, error) {
+	if dimension <= 0 {
+		return "", fmt.Errorf("vector dimension required")
+	}
+	return fmt.Sprintf(
+		`CREATE VIRTUAL TABLE IF NOT EXISTS kb_vec USING vec0(chunk_id text primary key, path text, ordinal integer, embedding float[%d] distance_metric=cosine)`,
+		dimension,
+	), nil
+}
+
+func (db *DB) refreshVectorProvenance(ctx context.Context, opts Options) error {
+	changed, err := db.vectorProvenanceChanged(ctx, opts)
+	if err != nil {
+		return err
+	}
+	if changed {
+		if _, err := db.sql.ExecContext(ctx, `DELETE FROM kb_vec`); err != nil {
+			return err
+		}
+		if _, err := db.sql.ExecContext(ctx, `
+			UPDATE kb_doc_embeddings
+			SET
+				state = 'pending',
+				last_error = '',
+				updated_at = (SELECT d.timestamp FROM kb_docs d WHERE d.path = kb_doc_embeddings.path)
+			WHERE EXISTS (SELECT 1 FROM kb_docs d WHERE d.path = kb_doc_embeddings.path)
+		`); err != nil {
+			return err
+		}
+	}
+	if err := db.setMeta(ctx, "embedder_model", strings.TrimSpace(opts.VectorModel)); err != nil {
+		return err
+	}
+	return db.setMeta(ctx, "embedder_dimensions", strconv.Itoa(opts.VectorDimension))
+}
+
+func (db *DB) vectorProvenanceChanged(ctx context.Context, opts Options) (bool, error) {
+	wantModel := strings.TrimSpace(opts.VectorModel)
+	wantDimensions := strconv.Itoa(opts.VectorDimension)
+
+	gotModel, err := db.meta(ctx, "embedder_model")
+	if err != nil && err != sql.ErrNoRows {
+		return false, err
+	}
+	if err == sql.ErrNoRows || gotModel != wantModel {
+		return true, nil
+	}
+
+	gotDimensions, err := db.meta(ctx, "embedder_dimensions")
+	if err != nil && err != sql.ErrNoRows {
+		return false, err
+	}
+	return err == sql.ErrNoRows || gotDimensions != wantDimensions, nil
 }
 
 func (db *DB) setMeta(ctx context.Context, key string, value string) error {

@@ -83,6 +83,27 @@ func TestSearchSkipsEmbedderWhenVectorUnavailable(t *testing.T) {
 	}
 }
 
+func TestSearchReportsDegradedWhenVectorReturnsNoHits(t *testing.T) {
+	resp, err := Search(t.Context(), SearchRequest{
+		Query: "primary database",
+		Limit: 5,
+		Keyword: stubKeywordSearcher{hits: []Hit{
+			{DocPath: "systems/db.md", Title: "DB", Snippet: "primary database", Text: "primary database"},
+		}},
+		Vector:   availableVectorSearcher{},
+		Embedder: stubEmbedder{},
+	})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(resp.Hits) != 1 || resp.Hits[0].DocPath != "systems/db.md" {
+		t.Fatalf("hits = %#v", resp.Hits)
+	}
+	if !containsDegraded(resp.Degraded, "no vector hits") {
+		t.Fatalf("degraded = %#v", resp.Degraded)
+	}
+}
+
 func containsDegraded(items []string, want string) bool {
 	for _, item := range items {
 		if strings.Contains(strings.ToLower(item), want) {
@@ -118,6 +139,16 @@ func (unavailableVectorSearcher) SearchVector(context.Context, VectorRequest) ([
 
 func (unavailableVectorSearcher) VectorAvailable() bool {
 	return false
+}
+
+type availableVectorSearcher struct{}
+
+func (availableVectorSearcher) SearchVector(context.Context, VectorRequest) ([]Hit, error) {
+	return nil, nil
+}
+
+func (availableVectorSearcher) VectorAvailable() bool {
+	return true
 }
 
 type stubEmbedder struct {

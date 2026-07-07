@@ -272,7 +272,7 @@ func (db *DB) SearchVector(ctx context.Context, req VectorRequest) ([]SearchHit,
 	}
 
 	limit := normalizeLimit(req.Limit, 20)
-	query, args := vectorSearchStatement(req.Embedding, vectorCandidateLimit(limit, req.PathPrefix))
+	query, args := vectorSearchStatement(req.Embedding, limit, req.PathPrefix)
 
 	rows, err := db.sql.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -286,19 +286,13 @@ func (db *DB) SearchVector(ctx context.Context, req VectorRequest) ([]SearchHit,
 		if err := rows.Scan(&hit.Path, &hit.Title, &hit.Type, &hit.Ordinal, &hit.Snippet, &hit.Text, &hit.Score); err != nil {
 			return nil, err
 		}
-		if req.PathPrefix != "" && !strings.HasPrefix(hit.Path, req.PathPrefix) {
-			continue
-		}
 		hit.Score = -hit.Score
 		hits = append(hits, hit)
-		if len(hits) >= limit {
-			break
-		}
 	}
 	return hits, rows.Err()
 }
 
-func vectorSearchStatement(embedding []float32, candidateLimit int) (string, []any) {
+func vectorSearchStatement(embedding []float32, candidateLimit int, pathPrefix string) (string, []any) {
 	query := `
 		SELECT v.path, d.title, d.type, CAST(v.ordinal AS INTEGER), c.text, c.text, v.distance
 		FROM kb_vec v
@@ -306,20 +300,28 @@ func vectorSearchStatement(embedding []float32, candidateLimit int) (string, []a
 		JOIN kb_doc_embeddings e ON e.path = d.path AND e.state = 'ready' AND e.updated_at = d.timestamp
 		JOIN kb_chunks c ON c.path = v.path AND c.ordinal = CAST(v.ordinal AS INTEGER)
 		WHERE v.embedding MATCH ? AND k = ?
-		ORDER BY v.distance ASC
 	`
-	return query, []any{vectorLiteral(embedding), candidateLimit}
+	args := []any{vectorLiteral(embedding), candidateLimit}
+	if strings.TrimSpace(pathPrefix) != "" {
+		query += " AND v.path >= ? AND v.path < ?"
+		args = append(args, pathPrefix, pathPrefixUpperBound(pathPrefix))
+	}
+	query += " ORDER BY v.distance ASC"
+	return query, args
 }
 
-func vectorCandidateLimit(limit int, pathPrefix string) int {
-	if strings.TrimSpace(pathPrefix) == "" {
-		return limit
+func pathPrefixUpperBound(prefix string) string {
+	if prefix == "" {
+		return ""
 	}
-	candidateLimit := limit * 10
-	if candidateLimit < 100 {
-		return 100
+	bytes := []byte(prefix)
+	for i := len(bytes) - 1; i >= 0; i-- {
+		if bytes[i] != 0xff {
+			bytes[i]++
+			return string(bytes[:i+1])
+		}
 	}
-	return candidateLimit
+	return prefix + "\xff"
 }
 
 func (db *DB) UpsertEmbeddings(ctx context.Context, docPath string, chunks []ChunkEmbedding) error {

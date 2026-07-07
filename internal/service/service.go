@@ -100,6 +100,7 @@ func New(root string, cfg config.Config, deps Deps) (*Service, error) {
 	indexDB, err := index.Open(filepath.Join(root, ".kvt", "index.db"), index.Options{
 		EnableVector:    embedder != nil,
 		VectorDimension: cfg.Embedder.Dimensions,
+		VectorModel:     cfg.Embedder.Model,
 	})
 	if err != nil {
 		return nil, err

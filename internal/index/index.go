@@ -14,6 +14,7 @@ import (
 type Options struct {
 	EnableVector    bool
 	VectorDimension int
+	VectorModel     string
 }
 
 type DB struct {

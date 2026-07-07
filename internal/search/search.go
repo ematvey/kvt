@@ -107,6 +107,8 @@ func Search(ctx context.Context, req SearchRequest) (SearchResponse, error) {
 					Weight: weightOrDefault(req.VecWeight, 0.5),
 					Hits:   vectorHits,
 				})
+			} else {
+				resp.Degraded = append(resp.Degraded, "vector degraded: no vector hits returned")
 			}
 		}
 	}

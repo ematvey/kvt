@@ -72,7 +72,7 @@ func TestSchemaUsesFTS5(t *testing.T) {
 }
 
 func TestVectorSearchStatementUsesSQLiteVecKNNShape(t *testing.T) {
-	query, args := vectorSearchStatement([]float32{1, 0}, 25)
+	query, args := vectorSearchStatement([]float32{1, 0}, 25, "")
 	normalized := strings.ToLower(query)
 	if !strings.Contains(normalized, "v.embedding match ?") {
 		t.Fatalf("query missing vector match:\n%s", query)
@@ -86,6 +86,9 @@ func TestVectorSearchStatementUsesSQLiteVecKNNShape(t *testing.T) {
 	if strings.Contains(normalized, " like ") {
 		t.Fatalf("query should not filter vec0 metadata with LIKE:\n%s", query)
 	}
+	if strings.Contains(normalized, "v.path >=") || strings.Contains(normalized, "v.path <") {
+		t.Fatalf("unscoped query should not add path range constraints:\n%s", query)
+	}
 	if strings.Count(normalized, "order by") != 1 || !strings.Contains(normalized, "order by v.distance asc") {
 		t.Fatalf("query should order only by distance:\n%s", query)
 	}
@@ -96,6 +99,57 @@ func TestVectorSearchStatementUsesSQLiteVecKNNShape(t *testing.T) {
 	}
 	if len(args) != 2 || args[0] != "[1,0]" || args[1] != 25 {
 		t.Fatalf("args = %#v", args)
+	}
+}
+
+func TestVectorSearchStatementScopesPathPrefixInsideKNN(t *testing.T) {
+	query, args := vectorSearchStatement([]float32{1, 0}, 25, "systems/")
+	normalized := strings.ToLower(query)
+	if !strings.Contains(normalized, "v.path >= ?") || !strings.Contains(normalized, "v.path < ?") {
+		t.Fatalf("scoped query should add vec0 path range constraints:\n%s", query)
+	}
+	if strings.Contains(normalized, " like ") {
+		t.Fatalf("scoped query should not use LIKE in vec0 KNN:\n%s", query)
+	}
+	if len(args) != 4 || args[2] != "systems/" || args[3] != "systems0" {
+		t.Fatalf("args = %#v", args)
+	}
+}
+
+func TestVectorTableStatementUsesCosineDistanceAndRequiresDimension(t *testing.T) {
+	statement, err := vectorTableStatement(1536)
+	if err != nil {
+		t.Fatalf("vectorTableStatement: %v", err)
+	}
+	if !strings.Contains(statement, "embedding float[1536] distance_metric=cosine") {
+		t.Fatalf("statement missing cosine metric:\n%s", statement)
+	}
+
+	_, err = vectorTableStatement(0)
+	if err == nil {
+		t.Fatalf("expected missing dimension error")
+	}
+}
+
+func TestVectorInitRequiresConfiguredDimensions(t *testing.T) {
+	db, err := Open(filepath.Join(t.TempDir(), "index.db"), Options{EnableVector: true})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+	})
+	summary, err := db.Summary(t.Context(), SummaryRequest{})
+	if err != nil {
+		t.Fatalf("Summary: %v", err)
+	}
+	if summary.VecAvailable {
+		t.Fatalf("vector unexpectedly available")
+	}
+	if !strings.Contains(summary.VecStatus, "dimension required") {
+		t.Fatalf("vec status = %q", summary.VecStatus)
 	}
 }
 
@@ -123,6 +177,60 @@ func TestApplyDocumentClearsExistingVectorRows(t *testing.T) {
 	}
 	if got := fakeVectorRowCount(t, db, "people/bob.md"); got != 1 {
 		t.Fatalf("bob vector rows = %d", got)
+	}
+}
+
+func TestVectorProvenanceChangeClearsVectorsAndMarksPending(t *testing.T) {
+	db := openTempDB(t)
+	createFakeVectorTable(t, db)
+	db.vecAvailable = true
+	if err := db.setMeta(t.Context(), "embedder_model", "old-model"); err != nil {
+		t.Fatalf("set old model: %v", err)
+	}
+	if err := db.setMeta(t.Context(), "embedder_dimensions", "2"); err != nil {
+		t.Fatalf("set old dimensions: %v", err)
+	}
+	if err := db.ApplyDocument(t.Context(), IndexedDocument{
+		Path:      "people/alice.md",
+		Hash:      "h1",
+		Title:     "Alice",
+		Type:      "Person",
+		Timestamp: "2026-07-07T12:00:00Z",
+		Chunks: []Chunk{
+			{Ordinal: 0, Text: "body"},
+		},
+	}); err != nil {
+		t.Fatalf("ApplyDocument: %v", err)
+	}
+	if err := db.UpsertEmbeddings(t.Context(), "people/alice.md", []ChunkEmbedding{
+		{Ordinal: 0, Vector: []float32{1, 0}, UpdatedAt: "2026-07-07T12:00:00Z"},
+	}); err != nil {
+		t.Fatalf("UpsertEmbeddings: %v", err)
+	}
+	if err := db.MarkEmbeddingState(t.Context(), "people/alice.md", "ready", "", "2026-07-07T12:00:00Z"); err != nil {
+		t.Fatalf("MarkEmbeddingState: %v", err)
+	}
+
+	if err := db.refreshVectorProvenance(t.Context(), Options{EnableVector: true, VectorDimension: 2, VectorModel: "new-model"}); err != nil {
+		t.Fatalf("refreshVectorProvenance: %v", err)
+	}
+
+	if got := fakeVectorRowCount(t, db, "people/alice.md"); got != 0 {
+		t.Fatalf("alice vector rows = %d", got)
+	}
+	summary, err := db.Summary(t.Context(), SummaryRequest{})
+	if err != nil {
+		t.Fatalf("Summary: %v", err)
+	}
+	if summary.EmbeddingPendingCount != 1 || summary.EmbeddingFailedCount != 0 {
+		t.Fatalf("embedding counts = pending %d failed %d", summary.EmbeddingPendingCount, summary.EmbeddingFailedCount)
+	}
+	model, err := db.meta(t.Context(), "embedder_model")
+	if err != nil {
+		t.Fatalf("embedder_model meta: %v", err)
+	}
+	if model != "new-model" {
+		t.Fatalf("embedder_model = %q", model)
 	}
 }
 
