@@ -86,6 +86,26 @@ type DeleteResponse struct {
 	Commit       CommitInfo
 }
 
+type PushRequest struct {
+	RemoteName string
+	Branch     string
+}
+
+type PushResponse struct {
+	RemoteName    string
+	Branch        string
+	PushedCommits int
+	PushedAt      string
+}
+
+type PushStatus struct {
+	RemoteName   string
+	Branch       string
+	LastPushedAt string
+	LastError    string
+	CommitsAhead int
+}
+
 type SearchRequest struct {
 	Query      string
 	PathPrefix string

@@ -8,6 +8,8 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+
+	"github.com/ematvey/kvt/internal/responsebudget"
 )
 
 type Client struct {
@@ -88,6 +90,10 @@ func History(root string, path string, cursor string, limit int) (HistoryPage, e
 
 func Push(root string, remote string, branch string) error {
 	return New(root).Push(remote, branch)
+}
+
+func CountAhead(root string, remote string, branch string) (int, error) {
+	return New(root).CountAhead(remote, branch)
 }
 
 func (c Client) Status(branch string) (WorktreeStatus, error) {
@@ -195,7 +201,7 @@ func (c Client) Log(cursor string, limit int) (LogPage, error) {
 	page := LogPage{Entries: make([]LogEntry, 0, min(limit, len(records)))}
 	for i, record := range records {
 		if i == limit {
-			page.NextCursor = strconv.Itoa(offset + limit)
+			page.NextCursor = responsebudget.EncodeOffset(offset + limit)
 			break
 		}
 		lines := strings.Split(record, "\n")
@@ -236,7 +242,7 @@ func (c Client) History(path string, cursor string, limit int) (HistoryPage, err
 	page := HistoryPage{Entries: make([]HistoryEntry, 0, min(limit, len(hashes)))}
 	for i, hash := range hashes {
 		if i == limit {
-			page.NextCursor = strconv.Itoa(offset + limit)
+			page.NextCursor = responsebudget.EncodeOffset(offset + limit)
 			break
 		}
 		entry, err := c.showPathCommit(hash, path)
@@ -249,8 +255,73 @@ func (c Client) History(path string, cursor string, limit int) (HistoryPage, err
 }
 
 func (c Client) Push(remote string, branch string) error {
-	_, err := c.run(context.Background(), nil, "push", remote, branch)
+	remote = strings.TrimSpace(remote)
+	branch = strings.TrimSpace(branch)
+	if remote == "" {
+		return fmt.Errorf("remote name is required")
+	}
+	if branch == "" {
+		current, err := c.currentBranch()
+		if err != nil {
+			return err
+		}
+		branch = current
+	}
+	_, err := c.run(context.Background(), nil, "push", remote, "HEAD:refs/heads/"+branch)
 	return err
+}
+
+func (c Client) CountAhead(remote string, branch string) (int, error) {
+	remote = strings.TrimSpace(remote)
+	branch = strings.TrimSpace(branch)
+	if remote == "" {
+		return 0, fmt.Errorf("remote name is required")
+	}
+	if branch == "" {
+		current, err := c.currentBranch()
+		if err != nil {
+			return 0, err
+		}
+		branch = current
+	}
+	if _, err := c.run(context.Background(), nil, "remote", "get-url", remote); err != nil {
+		return 0, err
+	}
+	localHead, err := c.head()
+	if err != nil {
+		return 0, err
+	}
+	out, err := c.run(context.Background(), nil, "ls-remote", "--heads", remote, branch)
+	if err != nil {
+		return 0, err
+	}
+	fields := strings.Fields(strings.TrimSpace(out))
+	if len(fields) == 0 {
+		return c.countRevList("HEAD")
+	}
+	remoteHead := fields[0]
+	if remoteHead == localHead {
+		return 0, nil
+	}
+	if _, err := c.run(context.Background(), nil, "cat-file", "-e", remoteHead+"^{commit}"); err != nil {
+		return 0, fmt.Errorf("remote %s/%s head %s is not present locally", remote, branch, shortHash(remoteHead))
+	}
+	if _, err := c.run(context.Background(), nil, "merge-base", "--is-ancestor", remoteHead, "HEAD"); err != nil {
+		return 0, fmt.Errorf("remote %s/%s is not an ancestor of HEAD", remote, branch)
+	}
+	return c.countRevList(remoteHead + "..HEAD")
+}
+
+func (c Client) countRevList(rev string) (int, error) {
+	out, err := c.run(context.Background(), nil, "rev-list", "--count", rev)
+	if err != nil {
+		return 0, err
+	}
+	count, err := strconv.Atoi(strings.TrimSpace(out))
+	if err != nil {
+		return 0, fmt.Errorf("parse rev-list count %q: %w", strings.TrimSpace(out), err)
+	}
+	return count, nil
 }
 
 func (c Client) currentBranch() (string, error) {
@@ -403,14 +474,7 @@ func authorEnv(opts CommitOptions) []string {
 }
 
 func parseCursor(cursor string) (int, error) {
-	if cursor == "" {
-		return 0, nil
-	}
-	offset, err := strconv.Atoi(cursor)
-	if err != nil || offset < 0 {
-		return 0, fmt.Errorf("invalid cursor %q", cursor)
-	}
-	return offset, nil
+	return responsebudget.DecodeOffset(cursor)
 }
 
 func normalizeLimit(limit int) int {

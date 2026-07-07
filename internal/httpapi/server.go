@@ -11,8 +11,10 @@ import (
 	"strings"
 
 	"github.com/ematvey/kvt/internal/config"
+	"github.com/ematvey/kvt/internal/gitops"
 	"github.com/ematvey/kvt/internal/index"
 	"github.com/ematvey/kvt/internal/ontology"
+	"github.com/ematvey/kvt/internal/responsebudget"
 	"github.com/ematvey/kvt/internal/service"
 )
 
@@ -85,6 +87,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		"ok":      resp.OK,
 		"git":     resp.Git,
 		"summary": summaryPayload(resp.Summary),
+		"push":    pushStatusPayload(resp.Push),
 	})
 }
 
@@ -97,7 +100,9 @@ func (s *Server) handleSummary(w http.ResponseWriter, r *http.Request) {
 		writeServiceError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, summaryPayload(resp))
+	payload := summaryPayload(resp)
+	payload["push"] = pushStatusPayload(s.svc.PushStatus(r.Context()))
+	writeJSON(w, http.StatusOK, payload)
 }
 
 func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
@@ -135,12 +140,18 @@ func (s *Server) handleGrep(w http.ResponseWriter, r *http.Request) {
 		Query:      req.Query,
 		PathPrefix: req.PathPrefix,
 		Limit:      req.Limit,
+		Cursor:     req.Cursor,
 	})
 	if err != nil {
 		writeServiceError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"matches": resp.Matches})
+	payload, err := budgetGrepPayload(req.Cursor, resp, s.cfg.Limits.MaxResponseChars)
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, payload)
 }
 
 func (s *Server) handleConcepts(w http.ResponseWriter, r *http.Request) {
@@ -152,12 +163,18 @@ func (s *Server) handleConcepts(w http.ResponseWriter, r *http.Request) {
 			FieldKey:   r.URL.Query().Get("field_key"),
 			FieldValue: r.URL.Query().Get("field_value"),
 			Limit:      intQuery(r, "limit"),
+			Cursor:     r.URL.Query().Get("cursor"),
 		})
 		if err != nil {
 			writeServiceError(w, err)
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"documents": resp.Documents})
+		payload, err := budgetListPayload(r.URL.Query().Get("cursor"), resp, s.cfg.Limits.MaxResponseChars)
+		if err != nil {
+			writeServiceError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, payload)
 	case http.MethodPost:
 		var req writeRequest
 		if !decodeRequest(w, r, &req) {
@@ -247,10 +264,12 @@ func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
 		writeServiceError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"entries":     resp.Entries,
-		"next_cursor": resp.NextCursor,
-	})
+	payload, err := budgetHistoryPayload(r.URL.Query().Get("cursor"), resp, s.cfg.Limits.MaxResponseChars)
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, payload)
 }
 
 func (s *Server) handleLog(w http.ResponseWriter, r *http.Request) {
@@ -265,10 +284,12 @@ func (s *Server) handleLog(w http.ResponseWriter, r *http.Request) {
 		writeServiceError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"entries":     resp.Entries,
-		"next_cursor": resp.NextCursor,
-	})
+	payload, err := budgetLogPayload(r.URL.Query().Get("cursor"), resp, s.cfg.Limits.MaxResponseChars)
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, payload)
 }
 
 func (s *Server) handleTypes(w http.ResponseWriter, r *http.Request) {
@@ -308,7 +329,19 @@ func (s *Server) handlePush(w http.ResponseWriter, r *http.Request) {
 	if !requireMethod(w, r, http.MethodPost) {
 		return
 	}
-	writeError(w, http.StatusNotImplemented, "push is implemented in the operations task", nil)
+	var req pushRequest
+	if !decodeRequest(w, r, &req) {
+		return
+	}
+	resp, err := s.svc.Push(r.Context(), service.PushRequest{
+		RemoteName: req.RemoteName,
+		Branch:     req.Branch,
+	})
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, pushPayload(resp))
 }
 
 type writeRequest struct {
@@ -337,10 +370,16 @@ type searchRequest struct {
 	Query      string `json:"query"`
 	PathPrefix string `json:"path_prefix"`
 	Limit      int    `json:"limit"`
+	Cursor     string `json:"cursor"`
 }
 
 type validateRequest struct {
 	ValidationMode string `json:"validation_mode"`
+}
+
+type pushRequest struct {
+	RemoteName string `json:"remote_name"`
+	Branch     string `json:"branch"`
 }
 
 func validationMode(raw string) service.ValidationMode {
@@ -367,9 +406,14 @@ func decodeRequest(w http.ResponseWriter, r *http.Request, out any) bool {
 }
 
 func writeJSON(w http.ResponseWriter, status int, payload any) {
+	data, err := json.Marshal(payload)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(payload)
+	_, _ = w.Write(data)
 }
 
 func writeServiceError(w http.ResponseWriter, err error) {
@@ -459,6 +503,120 @@ func summaryPayload(resp index.SummaryResponse) map[string]any {
 		"last_reconciled_at":      resp.LastReconciledAt,
 		"embedding_pending_count": resp.EmbeddingPendingCount,
 		"embedding_failed_count":  resp.EmbeddingFailedCount,
+	}
+}
+
+func budgetListPayload(cursor string, resp index.ListResponse, maxChars int) (map[string]any, error) {
+	page, err := responsebudget.ApplyItems(resp.Documents, cursor, resp.NextCursor, maxChars, func(documents []index.DocumentSummary, next string, truncated bool, budgetTruncated bool) ([]byte, error) {
+		return json.Marshal(listPayload(documents, next, truncated, budgetTruncated))
+	})
+	if err != nil {
+		return nil, err
+	}
+	return listPayload(page.Items, page.NextCursor, page.Truncated, page.BudgetTruncated), nil
+}
+
+func listPayload(documents []index.DocumentSummary, next string, truncated bool, budgetTruncated bool) map[string]any {
+	return map[string]any{
+		"documents":        documents,
+		"next_cursor":      next,
+		"truncated":        truncated,
+		"budget_truncated": budgetTruncated,
+	}
+}
+
+func budgetGrepPayload(cursor string, resp index.GrepResponse, maxChars int) (map[string]any, error) {
+	page, err := responsebudget.ApplyTextItems(resp.Matches, cursor, resp.NextCursor, maxChars,
+		func(match index.GrepMatch) string {
+			return match.Text
+		},
+		func(match index.GrepMatch, text string) index.GrepMatch {
+			match.Text = text
+			match.Snippet = text
+			return match
+		},
+		func(matches []index.GrepMatch, next string, truncated bool, budgetTruncated bool) ([]byte, error) {
+			return json.Marshal(grepPayload(matches, next, truncated, budgetTruncated))
+		},
+	)
+	if err != nil {
+		return nil, err
+	}
+	return grepPayload(page.Items, page.NextCursor, page.Truncated, page.BudgetTruncated), nil
+}
+
+func grepPayload(matches []index.GrepMatch, next string, truncated bool, budgetTruncated bool) map[string]any {
+	return map[string]any{
+		"matches":          matches,
+		"next_cursor":      next,
+		"truncated":        truncated,
+		"budget_truncated": budgetTruncated,
+	}
+}
+
+func budgetLogPayload(cursor string, resp gitops.LogPage, maxChars int) (map[string]any, error) {
+	page, err := responsebudget.ApplyItems(resp.Entries, cursor, resp.NextCursor, maxChars, func(entries []gitops.LogEntry, next string, truncated bool, budgetTruncated bool) ([]byte, error) {
+		return json.Marshal(logPayload(entries, next, truncated, budgetTruncated))
+	})
+	if err != nil {
+		return nil, err
+	}
+	return logPayload(page.Items, page.NextCursor, page.Truncated, page.BudgetTruncated), nil
+}
+
+func logPayload(entries []gitops.LogEntry, next string, truncated bool, budgetTruncated bool) map[string]any {
+	return map[string]any{
+		"entries":          entries,
+		"next_cursor":      next,
+		"truncated":        truncated,
+		"budget_truncated": budgetTruncated,
+	}
+}
+
+func budgetHistoryPayload(cursor string, resp gitops.HistoryPage, maxChars int) (map[string]any, error) {
+	page, err := responsebudget.ApplyTextItems(resp.Entries, cursor, resp.NextCursor, maxChars,
+		func(entry gitops.HistoryEntry) string {
+			return entry.Diff
+		},
+		func(entry gitops.HistoryEntry, text string) gitops.HistoryEntry {
+			entry.Diff = text
+			return entry
+		},
+		func(entries []gitops.HistoryEntry, next string, truncated bool, budgetTruncated bool) ([]byte, error) {
+			return json.Marshal(historyPayload(entries, next, truncated, budgetTruncated))
+		},
+	)
+	if err != nil {
+		return nil, err
+	}
+	return historyPayload(page.Items, page.NextCursor, page.Truncated, page.BudgetTruncated), nil
+}
+
+func historyPayload(entries []gitops.HistoryEntry, next string, truncated bool, budgetTruncated bool) map[string]any {
+	return map[string]any{
+		"entries":          entries,
+		"next_cursor":      next,
+		"truncated":        truncated,
+		"budget_truncated": budgetTruncated,
+	}
+}
+
+func pushPayload(resp service.PushResponse) map[string]any {
+	return map[string]any{
+		"remote_name":    resp.RemoteName,
+		"branch":         resp.Branch,
+		"pushed_commits": resp.PushedCommits,
+		"pushed_at":      resp.PushedAt,
+	}
+}
+
+func pushStatusPayload(status service.PushStatus) map[string]any {
+	return map[string]any{
+		"remote_name":    status.RemoteName,
+		"branch":         status.Branch,
+		"last_pushed_at": status.LastPushedAt,
+		"last_error":     status.LastError,
+		"commits_ahead":  status.CommitsAhead,
 	}
 }
 

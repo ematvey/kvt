@@ -1,0 +1,15 @@
+services:
+  kvt:
+    build: .
+    image: kvt:local
+    command: ["serve", "--vault", "/workspace"]
+    ports:
+      - "8200:8200"
+    volumes:
+      - ./vault:/workspace
+      # For SSH remotes, uncomment the next line and set SSH_AUTH_SOCK below.
+      # - ${SSH_AUTH_SOCK}:/ssh-agent
+    environment:
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      EMBEDDER_API_KEY: ${EMBEDDER_API_KEY:-}
+      # SSH_AUTH_SOCK: /ssh-agent

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -107,6 +108,87 @@ func TestQueryAndMetadataRoutesOverHTTP(t *testing.T) {
 	assertOKWithKey(t, doJSON(t, handler, http.MethodGet, "/types", nil, ""), "types")
 }
 
+func TestListAndGrepReturnPaginationCursor(t *testing.T) {
+	cfg := config.Default()
+	svc := newHTTPTestService(t, cfg)
+	handler := NewServer(svc, cfg)
+	for _, item := range []string{"a", "b"} {
+		create := doJSON(t, handler, http.MethodPost, "/concepts", map[string]any{
+			"path":    "notes/" + item + ".md",
+			"content": "---\ntype: Note\ntitle: " + item + "\n---\nshared body\n",
+		}, "")
+		if create.Code != http.StatusCreated {
+			t.Fatalf("POST %s status = %d body=%s", item, create.Code, create.Body.String())
+		}
+	}
+
+	list := doJSON(t, handler, http.MethodGet, "/concepts?limit=1", nil, "")
+	assertOKWithKey(t, list, "next_cursor")
+	grep := doJSON(t, handler, http.MethodPost, "/grep", map[string]any{"query": "shared", "limit": 1}, "")
+	assertOKWithKey(t, grep, "next_cursor")
+}
+
+func TestPushRouteOverHTTP(t *testing.T) {
+	svc, _ := newHTTPServiceWithBareRemote(t)
+	handler := NewServer(svc, config.Default())
+	if _, err := svc.Write(t.Context(), service.WriteRequest{Path: "notes/a.md", Content: "---\ntype: Note\ntitle: A\n---\nA\n"}); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+
+	res := doJSON(t, handler, http.MethodPost, "/push", map[string]any{"remote_name": "origin"}, "")
+	if res.Code != http.StatusOK {
+		t.Fatalf("push status = %d body=%s", res.Code, res.Body.String())
+	}
+	var payload map[string]any
+	decodeBody(t, res, &payload)
+	if payload["pushed_commits"].(float64) == 0 {
+		t.Fatalf("payload = %#v", payload)
+	}
+}
+
+func TestBudgetedRoutesApplyMaxResponseChars(t *testing.T) {
+	cfg := config.Default()
+	cfg.Limits.MaxResponseChars = 650
+	svc := newHTTPTestService(t, cfg)
+	handler := NewServer(svc, cfg)
+	longBody := "needle " + strings.Repeat("alpha ", 700)
+	for _, item := range []string{"a", "b", "c", "d", "e", "f"} {
+		create := doJSON(t, handler, http.MethodPost, "/concepts", map[string]any{
+			"path":    "notes/" + item + ".md",
+			"content": "---\ntype: Note\ntitle: " + item + "\ndescription: " + strings.Repeat(item, 120) + "\n---\n" + longBody + "\n",
+		}, "")
+		if create.Code != http.StatusCreated {
+			t.Fatalf("POST %s status = %d body=%s", item, create.Code, create.Body.String())
+		}
+	}
+	edit := doJSON(t, handler, http.MethodPatch, "/concepts/notes/a.md", map[string]any{
+		"old_string": "needle",
+		"new_string": "changed-needle",
+	}, "")
+	if edit.Code != http.StatusOK {
+		t.Fatalf("PATCH status = %d body=%s", edit.Code, edit.Body.String())
+	}
+
+	assertBudgetedHTTPResponse(t, doJSON(t, handler, http.MethodGet, "/concepts?limit=20", nil, ""), cfg.Limits.MaxResponseChars)
+	assertBudgetedHTTPResponse(t, doJSON(t, handler, http.MethodPost, "/grep", map[string]any{"query": "alpha", "limit": 20}, ""), cfg.Limits.MaxResponseChars)
+	assertBudgetedHTTPResponse(t, doJSON(t, handler, http.MethodGet, "/log?limit=20", nil, ""), cfg.Limits.MaxResponseChars)
+	assertBudgetedHTTPResponse(t, doJSON(t, handler, http.MethodGet, "/history/notes/a.md?limit=20", nil, ""), cfg.Limits.MaxResponseChars)
+}
+
+func TestHealthAndSummaryDoNotProbeMissingPushRemote(t *testing.T) {
+	cfg := config.Default()
+	svc := newHTTPTestService(t, cfg)
+	handler := NewServer(svc, cfg)
+	if _, err := svc.Write(t.Context(), service.WriteRequest{Path: "notes/a.md", Content: "---\ntype: Note\ntitle: A\n---\nA\n"}); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+
+	health := doJSON(t, handler, http.MethodGet, "/health", nil, "")
+	assertOKWithEmptyPushError(t, health)
+	summary := doJSON(t, handler, http.MethodGet, "/summary", nil, "")
+	assertOKWithEmptyPushError(t, summary)
+}
+
 func TestInvalidCursorReturnsBadRequest(t *testing.T) {
 	cfg := config.Default()
 	svc := newHTTPTestService(t, cfg)
@@ -180,6 +262,35 @@ func newHTTPTestService(t *testing.T, cfg config.Config) *service.Service {
 	return svc
 }
 
+func newHTTPServiceWithBareRemote(t *testing.T) (*service.Service, string) {
+	t.Helper()
+	testutil.RequireGit(t)
+	root := t.TempDir()
+	remote := filepath.Join(t.TempDir(), "remote.git")
+	runHTTPGit(t, t.TempDir(), "init", "--bare", remote)
+	if _, err := service.Init(t.Context(), service.InitRequest{VaultPath: root, Defaults: true}); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	runHTTPGit(t, root, "remote", "add", "origin", remote)
+	cfg := config.Default()
+	cfg.Git.Push = "off"
+	svc, err := service.New(root, cfg, service.Deps{})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	return svc, remote
+}
+
+func runHTTPGit(t *testing.T, root string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = root
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %s failed: %v\n%s", strings.Join(args, " "), err, string(out))
+	}
+}
+
 func doJSON(t *testing.T, handler http.Handler, method string, path string, body any, token string) *httptest.ResponseRecorder {
 	t.Helper()
 	var reader *bytes.Reader
@@ -208,6 +319,40 @@ func decodeBody(t *testing.T, res *httptest.ResponseRecorder, out any) {
 	t.Helper()
 	if err := json.Unmarshal(res.Body.Bytes(), out); err != nil {
 		t.Fatalf("decode body %q: %v", res.Body.String(), err)
+	}
+}
+
+func assertBudgetedHTTPResponse(t *testing.T, res *httptest.ResponseRecorder, maxChars int) {
+	t.Helper()
+	if res.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", res.Code, res.Body.String())
+	}
+	if len([]rune(res.Body.String())) > maxChars {
+		t.Fatalf("body length = %d, want <= %d: %s", len([]rune(res.Body.String())), maxChars, res.Body.String())
+	}
+	var payload map[string]any
+	decodeBody(t, res, &payload)
+	if payload["budget_truncated"] != true {
+		t.Fatalf("expected budget_truncated in %#v", payload)
+	}
+	if payload["next_cursor"] == "" {
+		t.Fatalf("expected next_cursor in %#v", payload)
+	}
+}
+
+func assertOKWithEmptyPushError(t *testing.T, res *httptest.ResponseRecorder) {
+	t.Helper()
+	if res.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", res.Code, res.Body.String())
+	}
+	var payload map[string]any
+	decodeBody(t, res, &payload)
+	push, ok := payload["push"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing push status in %#v", payload)
+	}
+	if push["last_error"] != "" {
+		t.Fatalf("push status = %#v", push)
 	}
 }
 

@@ -13,6 +13,7 @@ type HealthResponse struct {
 	OK      bool
 	Git     gitops.WorktreeStatus
 	Summary index.SummaryResponse
+	Push    PushStatus
 }
 
 type LogRequest struct {
@@ -53,6 +54,7 @@ func (s *Service) Health(ctx context.Context) (HealthResponse, error) {
 		OK:      status.BranchOK && !status.Detached,
 		Git:     status,
 		Summary: summary,
+		Push:    s.PushStatus(ctx),
 	}, nil
 }
 

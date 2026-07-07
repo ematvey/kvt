@@ -86,6 +86,9 @@ func Default() Config {
 		Auth: AuthConfig{
 			APIKeys: []string{},
 		},
+		Limits: LimitsConfig{
+			MaxResponseChars: 16000,
+		},
 	}
 }
 

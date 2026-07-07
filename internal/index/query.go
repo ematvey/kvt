@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"strings"
 	"unicode"
+
+	"github.com/ematvey/kvt/internal/responsebudget"
 )
 
 var ErrVectorUnavailable = errors.New("vector search unavailable")
@@ -18,6 +20,7 @@ type ListRequest struct {
 	FieldKey   string
 	FieldValue string
 	Limit      int
+	Cursor     string
 }
 
 type DocumentSummary struct {
@@ -30,13 +33,15 @@ type DocumentSummary struct {
 }
 
 type ListResponse struct {
-	Documents []DocumentSummary
+	Documents  []DocumentSummary
+	NextCursor string
 }
 
 type GrepRequest struct {
 	Query      string
 	PathPrefix string
 	Limit      int
+	Cursor     string
 }
 
 type SearchRequest struct {
@@ -83,7 +88,8 @@ type GrepMatch struct {
 }
 
 type GrepResponse struct {
-	Matches []GrepMatch
+	Matches    []GrepMatch
+	NextCursor string
 }
 
 type SummaryRequest struct{}
@@ -100,6 +106,10 @@ type SummaryResponse struct {
 
 func (db *DB) List(ctx context.Context, req ListRequest) (ListResponse, error) {
 	if err := ctx.Err(); err != nil {
+		return ListResponse{}, err
+	}
+	offset, err := responsebudget.DecodeOffset(req.Cursor)
+	if err != nil {
 		return ListResponse{}, err
 	}
 
@@ -140,9 +150,8 @@ func (db *DB) List(ctx context.Context, req ListRequest) (ListResponse, error) {
 		query += " WHERE " + strings.Join(where, " AND ")
 	}
 	query += " ORDER BY d.path ASC"
-	if limit := normalizeLimit(req.Limit, 100); limit > 0 {
-		query += fmt.Sprintf(" LIMIT %d", limit)
-	}
+	limit := normalizeLimit(req.Limit, 100)
+	query += fmt.Sprintf(" LIMIT %d OFFSET %d", limit+1, offset)
 
 	rows, err := db.sql.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -152,6 +161,10 @@ func (db *DB) List(ctx context.Context, req ListRequest) (ListResponse, error) {
 
 	resp := ListResponse{Documents: []DocumentSummary{}}
 	for rows.Next() {
+		if len(resp.Documents) == limit {
+			resp.NextCursor = responsebudget.EncodeOffset(offset + limit)
+			break
+		}
 		var doc DocumentSummary
 		if err := rows.Scan(&doc.Path, &doc.Hash, &doc.Title, &doc.Type, &doc.Description, &doc.Timestamp); err != nil {
 			return ListResponse{}, err
@@ -167,6 +180,10 @@ func (db *DB) Grep(ctx context.Context, req GrepRequest) (GrepResponse, error) {
 	}
 	if strings.TrimSpace(req.Query) == "" {
 		return GrepResponse{}, fmt.Errorf("query is required")
+	}
+	offset, err := responsebudget.DecodeOffset(req.Cursor)
+	if err != nil {
+		return GrepResponse{}, err
 	}
 
 	query := `
@@ -184,7 +201,8 @@ func (db *DB) Grep(ctx context.Context, req GrepRequest) (GrepResponse, error) {
 		args = append(args, req.PathPrefix+"%")
 	}
 	query += " ORDER BY path ASC, CAST(ordinal AS INTEGER) ASC"
-	query += fmt.Sprintf(" LIMIT %d", normalizeLimit(req.Limit, 20))
+	limit := normalizeLimit(req.Limit, 20)
+	query += fmt.Sprintf(" LIMIT %d OFFSET %d", limit+1, offset)
 
 	rows, err := db.sql.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -194,6 +212,10 @@ func (db *DB) Grep(ctx context.Context, req GrepRequest) (GrepResponse, error) {
 
 	resp := GrepResponse{Matches: []GrepMatch{}}
 	for rows.Next() {
+		if len(resp.Matches) == limit {
+			resp.NextCursor = responsebudget.EncodeOffset(offset + limit)
+			break
+		}
 		var match GrepMatch
 		if err := rows.Scan(&match.Path, &match.Ordinal, &match.Snippet, &match.Text); err != nil {
 			return GrepResponse{}, err

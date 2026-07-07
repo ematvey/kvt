@@ -123,6 +123,50 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 		}
 		fmt.Fprintf(stdout, "reindexed %d documents\n", len(result.AppliedDocuments))
 		return 0
+	case "push":
+		fs := flag.NewFlagSet("push", flag.ContinueOnError)
+		fs.SetOutput(stderr)
+		vaultPath := fs.String("vault", os.Getenv("KVT_VAULT"), "vault path")
+		configPath := fs.String("config", "", "config path")
+		remoteName := fs.String("remote", "", "remote name")
+		branch := fs.String("branch", "", "branch name")
+		if err := fs.Parse(args[2:]); err != nil {
+			return 2
+		}
+		if *vaultPath == "" {
+			fmt.Fprintln(stderr, "push requires --vault or KVT_VAULT")
+			return 2
+		}
+		if err := requireInitializedVault(*vaultPath); err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		cfg, err := config.Load(*vaultPath, *configPath)
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		lock, err := service.AcquireVaultLock(*vaultPath)
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		defer lock.Release()
+		svc, err := service.New(*vaultPath, cfg, service.Deps{})
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		resp, err := svc.Push(context.Background(), service.PushRequest{
+			RemoteName: *remoteName,
+			Branch:     *branch,
+		})
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		fmt.Fprintf(stdout, "pushed %d commits to %s/%s\n", resp.PushedCommits, resp.RemoteName, resp.Branch)
+		return 0
 	case "serve":
 		fs := flag.NewFlagSet("serve", flag.ContinueOnError)
 		fs.SetOutput(stderr)

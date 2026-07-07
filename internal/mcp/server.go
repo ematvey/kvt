@@ -28,7 +28,7 @@ func NewServer(svc *service.Service, cfg config.Config) (*Server, error) {
 		}, &mcpsdk.ServerOptions{Instructions: DefaultInstructions()}),
 		toolNames: map[string]bool{},
 	}
-	registerTools(server, svc)
+	registerTools(server, svc, cfg)
 	registerHowto(server)
 	return server, nil
 }

@@ -40,6 +40,12 @@ type Service struct {
 	embeddingMaxAttempts  int
 	embeddingBackoffDelay func(attempt int) time.Duration
 	writerMu              sync.Mutex
+	pushExecMu            sync.Mutex
+	pushMu                sync.Mutex
+	pushTimer             *time.Timer
+	lastPushAt            string
+	lastPushError         string
+	commitsAhead          int
 	lastTimestamp         time.Time
 	embedQueue            chan embeddingJob
 }
@@ -178,10 +184,13 @@ func (s *Service) commitMutation(message string, agent string, paths []string) (
 	if !result.Changed {
 		return CommitInfo{}, fmt.Errorf("mutation produced no git commit")
 	}
-	return CommitInfo{
+	info := CommitInfo{
 		Hash:      result.Hash,
 		ShortHash: result.ShortHash,
-	}, nil
+	}
+	s.noteLocalCommit()
+	s.scheduleAutoPush()
+	return info, nil
 }
 
 func checkBaseHash(docPath pathutil.Path, baseHash string, current conceptState, err error) error {

@@ -133,6 +133,53 @@ func TestMCPToolContractsUseStableJSONShapes(t *testing.T) {
 	}
 }
 
+func TestMCPListAndGrepExposePaginationCursor(t *testing.T) {
+	svc := newMCPTestService(t)
+	server, err := NewServer(svc, openConfig())
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	session := connectMCPClient(t, server)
+	for _, item := range []string{"a", "b"} {
+		callToolMap(t, session, "kvt_write", map[string]any{
+			"path":    "notes/" + item + ".md",
+			"content": "---\ntype: Note\ntitle: " + item + "\n---\nshared body\n",
+		})
+	}
+
+	list := callToolMap(t, session, "kvt_list", map[string]any{"limit": 1})
+	if list["next_cursor"] == "" || list["truncated"] != true {
+		t.Fatalf("list output = %#v", list)
+	}
+	grep := callToolMap(t, session, "kvt_grep", map[string]any{"query": "shared", "limit": 1})
+	if grep["next_cursor"] == "" || grep["truncated"] != true {
+		t.Fatalf("grep output = %#v", grep)
+	}
+}
+
+func TestMCPListAndGrepApplyResponseBudget(t *testing.T) {
+	svc := newMCPTestService(t)
+	cfg := openConfig()
+	cfg.Limits.MaxResponseChars = 650
+	server, err := NewServer(svc, cfg)
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	session := connectMCPClient(t, server)
+	longBody := "needle " + strings.Repeat("alpha ", 700)
+	for _, item := range []string{"a", "b", "c", "d", "e", "f"} {
+		callToolMap(t, session, "kvt_write", map[string]any{
+			"path":    "notes/" + item + ".md",
+			"content": "---\ntype: Note\ntitle: " + item + "\ndescription: " + strings.Repeat(item, 120) + "\n---\n" + longBody + "\n",
+		})
+	}
+
+	list := callToolMap(t, session, "kvt_list", map[string]any{"limit": 20})
+	assertBudgetedMCPOutput(t, list, cfg.Limits.MaxResponseChars)
+	grep := callToolMap(t, session, "kvt_grep", map[string]any{"query": "alpha", "limit": 20})
+	assertBudgetedMCPOutput(t, grep, cfg.Limits.MaxResponseChars)
+}
+
 func TestToolDescriptionsAreRegistered(t *testing.T) {
 	svc := newMCPTestService(t)
 	server, err := NewServer(svc, openConfig())
@@ -272,6 +319,23 @@ func callToolMap(t *testing.T, session *mcpsdk.ClientSession, name string, args 
 		t.Fatalf("unmarshal structured content %s: %v", string(data), err)
 	}
 	return out
+}
+
+func assertBudgetedMCPOutput(t *testing.T, payload map[string]any, maxChars int) {
+	t.Helper()
+	data, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+	if len([]rune(string(data))) > maxChars {
+		t.Fatalf("payload length = %d, want <= %d: %s", len([]rune(string(data))), maxChars, string(data))
+	}
+	if payload["budget_truncated"] != true {
+		t.Fatalf("expected budget_truncated in %#v", payload)
+	}
+	if payload["next_cursor"] == "" {
+		t.Fatalf("expected next_cursor in %#v", payload)
+	}
 }
 
 func callToolResult(t *testing.T, session *mcpsdk.ClientSession, name string, args map[string]any) *mcpsdk.CallToolResult {

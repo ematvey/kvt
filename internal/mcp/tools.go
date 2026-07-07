@@ -2,10 +2,13 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 
+	"github.com/ematvey/kvt/internal/config"
 	"github.com/ematvey/kvt/internal/gitops"
 	"github.com/ematvey/kvt/internal/index"
 	"github.com/ematvey/kvt/internal/ontology"
+	"github.com/ematvey/kvt/internal/responsebudget"
 	"github.com/ematvey/kvt/internal/service"
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -16,6 +19,7 @@ type searchInput struct {
 	Query      string `json:"query" jsonschema:"search query"`
 	PathPrefix string `json:"path_prefix,omitempty" jsonschema:"optional bundle-relative path prefix"`
 	Limit      int    `json:"limit,omitempty" jsonschema:"maximum number of results"`
+	Cursor     string `json:"cursor,omitempty" jsonschema:"pagination cursor for grep results"`
 }
 
 type listInput struct {
@@ -24,6 +28,7 @@ type listInput struct {
 	FieldKey   string `json:"field_key,omitempty" jsonschema:"optional frontmatter field key filter"`
 	FieldValue string `json:"field_value,omitempty" jsonschema:"optional frontmatter field value filter"`
 	Limit      int    `json:"limit,omitempty" jsonschema:"maximum number of documents"`
+	Cursor     string `json:"cursor,omitempty" jsonschema:"pagination cursor"`
 }
 
 type pathInput struct {
@@ -70,13 +75,14 @@ type validateInput struct {
 }
 
 type summaryOutput struct {
-	DocumentCount         int            `json:"document_count"`
-	CountsByType          map[string]int `json:"counts_by_type"`
-	VecAvailable          bool           `json:"vec_available"`
-	VecStatus             string         `json:"vec_status"`
-	LastReconciledAt      string         `json:"last_reconciled_at"`
-	EmbeddingPendingCount int            `json:"embedding_pending_count"`
-	EmbeddingFailedCount  int            `json:"embedding_failed_count"`
+	DocumentCount         int              `json:"document_count"`
+	CountsByType          map[string]int   `json:"counts_by_type"`
+	VecAvailable          bool             `json:"vec_available"`
+	VecStatus             string           `json:"vec_status"`
+	LastReconciledAt      string           `json:"last_reconciled_at"`
+	EmbeddingPendingCount int              `json:"embedding_pending_count"`
+	EmbeddingFailedCount  int              `json:"embedding_failed_count"`
+	Push                  pushStatusOutput `json:"push"`
 }
 
 type howtoOutput struct {
@@ -97,7 +103,10 @@ type searchHitOutput struct {
 }
 
 type grepOutput struct {
-	Matches []grepMatchOutput `json:"matches"`
+	Matches         []grepMatchOutput `json:"matches"`
+	NextCursor      string            `json:"next_cursor"`
+	Truncated       bool              `json:"truncated"`
+	BudgetTruncated bool              `json:"budget_truncated"`
 }
 
 type grepMatchOutput struct {
@@ -108,7 +117,10 @@ type grepMatchOutput struct {
 }
 
 type listOutput struct {
-	Documents []documentSummaryOutput `json:"documents"`
+	Documents       []documentSummaryOutput `json:"documents"`
+	NextCursor      string                  `json:"next_cursor"`
+	Truncated       bool                    `json:"truncated"`
+	BudgetTruncated bool                    `json:"budget_truncated"`
 }
 
 type documentSummaryOutput struct {
@@ -152,8 +164,10 @@ type fieldDefOutput struct {
 }
 
 type logOutput struct {
-	Entries    []logEntryOutput `json:"entries"`
-	NextCursor string           `json:"next_cursor"`
+	Entries         []logEntryOutput `json:"entries"`
+	NextCursor      string           `json:"next_cursor"`
+	Truncated       bool             `json:"truncated"`
+	BudgetTruncated bool             `json:"budget_truncated"`
 }
 
 type logEntryOutput struct {
@@ -167,8 +181,10 @@ type logEntryOutput struct {
 }
 
 type historyOutput struct {
-	Entries    []historyEntryOutput `json:"entries"`
-	NextCursor string               `json:"next_cursor"`
+	Entries         []historyEntryOutput `json:"entries"`
+	NextCursor      string               `json:"next_cursor"`
+	Truncated       bool                 `json:"truncated"`
+	BudgetTruncated bool                 `json:"budget_truncated"`
 }
 
 type historyEntryOutput struct {
@@ -206,15 +222,27 @@ type validateOutput struct {
 	Warnings []issueOutput `json:"warnings"`
 }
 
+type pushStatusOutput struct {
+	RemoteName   string `json:"remote_name"`
+	Branch       string `json:"branch"`
+	LastPushedAt string `json:"last_pushed_at"`
+	LastError    string `json:"last_error"`
+	CommitsAhead int    `json:"commits_ahead"`
+}
+
 type issueOutput struct {
 	Path    string `json:"path"`
 	Field   string `json:"field"`
 	Message string `json:"message"`
 }
 
-func registerTools(server *Server, svc *service.Service) {
+func registerTools(server *Server, svc *service.Service, cfg config.Config) {
 	addTool(server, "kvt_summary", "Return vault health-oriented summary counts and embedding status.", func(ctx context.Context, _ emptyInput) (summaryOutput, error) {
 		resp, err := svc.Summary(ctx, index.SummaryRequest{})
+		if err != nil {
+			return summaryOutput{}, err
+		}
+		push := svc.PushStatus(ctx)
 		return summaryOutput{
 			DocumentCount:         resp.DocumentCount,
 			CountsByType:          resp.CountsByType,
@@ -223,7 +251,8 @@ func registerTools(server *Server, svc *service.Service) {
 			LastReconciledAt:      resp.LastReconciledAt,
 			EmbeddingPendingCount: resp.EmbeddingPendingCount,
 			EmbeddingFailedCount:  resp.EmbeddingFailedCount,
-		}, err
+			Push:                  pushStatusOutputFrom(push),
+		}, nil
 	})
 	addTool(server, "kvt_howto", "Return concise KVT workflow guidance for coding agents.", func(context.Context, emptyInput) (howtoOutput, error) {
 		return howtoOutput{Text: DefaultHowto()}, nil
@@ -233,8 +262,11 @@ func registerTools(server *Server, svc *service.Service) {
 		return searchOutputFrom(resp), err
 	})
 	addTool(server, "kvt_grep", "Use for exact content lookup when you know text that should appear.", func(ctx context.Context, in searchInput) (grepOutput, error) {
-		resp, err := svc.Grep(ctx, index.GrepRequest{Query: in.Query, PathPrefix: in.PathPrefix, Limit: in.Limit})
-		return grepOutputFrom(resp), err
+		resp, err := svc.Grep(ctx, index.GrepRequest{Query: in.Query, PathPrefix: in.PathPrefix, Limit: in.Limit, Cursor: in.Cursor})
+		if err != nil {
+			return grepOutput{}, err
+		}
+		return budgetGrepOutput(in.Cursor, resp, cfg.Limits.MaxResponseChars)
 	})
 	addTool(server, "kvt_list", "List concepts by type, path prefix, or frontmatter field filters.", func(ctx context.Context, in listInput) (listOutput, error) {
 		resp, err := svc.List(ctx, index.ListRequest{
@@ -243,8 +275,12 @@ func registerTools(server *Server, svc *service.Service) {
 			FieldKey:   in.FieldKey,
 			FieldValue: in.FieldValue,
 			Limit:      in.Limit,
+			Cursor:     in.Cursor,
 		})
-		return listOutputFrom(resp), err
+		if err != nil {
+			return listOutput{}, err
+		}
+		return budgetListOutput(in.Cursor, resp, cfg.Limits.MaxResponseChars)
 	})
 	addTool(server, "kvt_read", "Read one concept and return current content, hash, and backlinks.", func(ctx context.Context, in pathInput) (readOutput, error) {
 		resp, err := svc.Read(ctx, service.ReadRequest{Path: in.Path})
@@ -256,11 +292,17 @@ func registerTools(server *Server, svc *service.Service) {
 	})
 	addTool(server, "kvt_log", "Return paginated git commit history for the vault.", func(ctx context.Context, in pageInput) (logOutput, error) {
 		resp, err := svc.Log(ctx, service.LogRequest{Cursor: in.Cursor, Limit: in.Limit})
-		return logOutputFrom(resp), err
+		if err != nil {
+			return logOutput{}, err
+		}
+		return budgetLogOutput(in.Cursor, resp, cfg.Limits.MaxResponseChars)
 	})
 	addTool(server, "kvt_history", "Return paginated commit history and diffs for one concept.", func(ctx context.Context, in historyInput) (historyOutput, error) {
 		resp, err := svc.History(ctx, service.HistoryRequest{Path: in.Path, Cursor: in.Cursor, Limit: in.Limit})
-		return historyOutputFrom(resp), err
+		if err != nil {
+			return historyOutput{}, err
+		}
+		return budgetHistoryOutput(in.Cursor, resp, cfg.Limits.MaxResponseChars)
 	})
 	addTool(server, "kvt_write", "Write complete concept content; use base_hash when updating an existing concept.", func(ctx context.Context, in writeInput) (writeOutput, error) {
 		resp, err := svc.Write(ctx, service.WriteRequest{
@@ -326,9 +368,29 @@ func searchOutputFrom(resp service.SearchResponse) searchOutput {
 	return out
 }
 
-func grepOutputFrom(resp index.GrepResponse) grepOutput {
-	out := grepOutput{}
-	for _, match := range resp.Matches {
+func budgetGrepOutput(cursor string, resp index.GrepResponse, maxChars int) (grepOutput, error) {
+	page, err := responsebudget.ApplyTextItems(resp.Matches, cursor, resp.NextCursor, maxChars,
+		func(match index.GrepMatch) string {
+			return match.Text
+		},
+		func(match index.GrepMatch, text string) index.GrepMatch {
+			match.Text = text
+			match.Snippet = text
+			return match
+		},
+		func(matches []index.GrepMatch, next string, truncated bool, budgetTruncated bool) ([]byte, error) {
+			return json.Marshal(grepOutputFromMatches(matches, next, truncated, budgetTruncated))
+		},
+	)
+	if err != nil {
+		return grepOutput{}, err
+	}
+	return grepOutputFromMatches(page.Items, page.NextCursor, page.Truncated, page.BudgetTruncated), nil
+}
+
+func grepOutputFromMatches(matches []index.GrepMatch, next string, truncated bool, budgetTruncated bool) grepOutput {
+	out := grepOutput{NextCursor: next, Truncated: truncated, BudgetTruncated: budgetTruncated}
+	for _, match := range matches {
 		out.Matches = append(out.Matches, grepMatchOutput{
 			Path:    match.Path,
 			Ordinal: match.Ordinal,
@@ -339,9 +401,19 @@ func grepOutputFrom(resp index.GrepResponse) grepOutput {
 	return out
 }
 
-func listOutputFrom(resp index.ListResponse) listOutput {
-	out := listOutput{}
-	for _, doc := range resp.Documents {
+func budgetListOutput(cursor string, resp index.ListResponse, maxChars int) (listOutput, error) {
+	page, err := responsebudget.ApplyItems(resp.Documents, cursor, resp.NextCursor, maxChars, func(documents []index.DocumentSummary, next string, truncated bool, budgetTruncated bool) ([]byte, error) {
+		return json.Marshal(listOutputFromDocuments(documents, next, truncated, budgetTruncated))
+	})
+	if err != nil {
+		return listOutput{}, err
+	}
+	return listOutputFromDocuments(page.Items, page.NextCursor, page.Truncated, page.BudgetTruncated), nil
+}
+
+func listOutputFromDocuments(documents []index.DocumentSummary, next string, truncated bool, budgetTruncated bool) listOutput {
+	out := listOutput{NextCursor: next, Truncated: truncated, BudgetTruncated: budgetTruncated}
+	for _, doc := range documents {
 		out.Documents = append(out.Documents, documentSummaryOutput{
 			Path:        doc.Path,
 			Hash:        doc.Hash,
@@ -388,9 +460,19 @@ func fieldDefOutputFrom(field ontology.FieldDef) fieldDefOutput {
 	}
 }
 
-func logOutputFrom(resp gitops.LogPage) logOutput {
-	out := logOutput{NextCursor: resp.NextCursor}
-	for _, entry := range resp.Entries {
+func budgetLogOutput(cursor string, resp gitops.LogPage, maxChars int) (logOutput, error) {
+	page, err := responsebudget.ApplyItems(resp.Entries, cursor, resp.NextCursor, maxChars, func(entries []gitops.LogEntry, next string, truncated bool, budgetTruncated bool) ([]byte, error) {
+		return json.Marshal(logOutputFromEntries(entries, next, truncated, budgetTruncated))
+	})
+	if err != nil {
+		return logOutput{}, err
+	}
+	return logOutputFromEntries(page.Items, page.NextCursor, page.Truncated, page.BudgetTruncated), nil
+}
+
+func logOutputFromEntries(entries []gitops.LogEntry, next string, truncated bool, budgetTruncated bool) logOutput {
+	out := logOutput{NextCursor: next, Truncated: truncated, BudgetTruncated: budgetTruncated}
+	for _, entry := range entries {
 		out.Entries = append(out.Entries, logEntryOutput{
 			Hash:        entry.Hash,
 			ShortHash:   entry.ShortHash,
@@ -404,9 +486,28 @@ func logOutputFrom(resp gitops.LogPage) logOutput {
 	return out
 }
 
-func historyOutputFrom(resp gitops.HistoryPage) historyOutput {
-	out := historyOutput{NextCursor: resp.NextCursor}
-	for _, entry := range resp.Entries {
+func budgetHistoryOutput(cursor string, resp gitops.HistoryPage, maxChars int) (historyOutput, error) {
+	page, err := responsebudget.ApplyTextItems(resp.Entries, cursor, resp.NextCursor, maxChars,
+		func(entry gitops.HistoryEntry) string {
+			return entry.Diff
+		},
+		func(entry gitops.HistoryEntry, text string) gitops.HistoryEntry {
+			entry.Diff = text
+			return entry
+		},
+		func(entries []gitops.HistoryEntry, next string, truncated bool, budgetTruncated bool) ([]byte, error) {
+			return json.Marshal(historyOutputFromEntries(entries, next, truncated, budgetTruncated))
+		},
+	)
+	if err != nil {
+		return historyOutput{}, err
+	}
+	return historyOutputFromEntries(page.Items, page.NextCursor, page.Truncated, page.BudgetTruncated), nil
+}
+
+func historyOutputFromEntries(entries []gitops.HistoryEntry, next string, truncated bool, budgetTruncated bool) historyOutput {
+	out := historyOutput{NextCursor: next, Truncated: truncated, BudgetTruncated: budgetTruncated}
+	for _, entry := range entries {
 		out.Entries = append(out.Entries, historyEntryOutput{
 			Hash:      entry.Hash,
 			ShortHash: entry.ShortHash,
@@ -443,6 +544,16 @@ func validateOutputFrom(resp service.ValidateResponse) validateOutput {
 	return validateOutput{
 		Errors:   issuesOutputFrom(resp.Errors),
 		Warnings: issuesOutputFrom(resp.Warnings),
+	}
+}
+
+func pushStatusOutputFrom(status service.PushStatus) pushStatusOutput {
+	return pushStatusOutput{
+		RemoteName:   status.RemoteName,
+		Branch:       status.Branch,
+		LastPushedAt: status.LastPushedAt,
+		LastError:    status.LastError,
+		CommitsAhead: status.CommitsAhead,
 	}
 }
 

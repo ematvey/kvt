@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -14,6 +15,7 @@ import (
 	"github.com/ematvey/kvt/internal/config"
 	"github.com/ematvey/kvt/internal/index"
 	"github.com/ematvey/kvt/internal/service"
+	"github.com/ematvey/kvt/internal/testutil"
 )
 
 func TestRunVersion(t *testing.T) {
@@ -133,6 +135,38 @@ func TestRunReindexRebuildsDerivedIndex(t *testing.T) {
 	}
 }
 
+func TestRunPushPushesToConfiguredRemote(t *testing.T) {
+	testutil.RequireGit(t)
+	root := t.TempDir()
+	remote := filepath.Join(t.TempDir(), "remote.git")
+	runGit(t, t.TempDir(), "init", "--bare", remote)
+	if _, err := service.Init(t.Context(), service.InitRequest{VaultPath: root, Defaults: true}); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	runGit(t, root, "remote", "add", "origin", remote)
+	cfg := config.Default()
+	cfg.Git.Push = "off"
+	svc, err := service.New(root, cfg, service.Deps{})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if _, err := svc.Write(t.Context(), service.WriteRequest{Path: "notes/a.md", Content: "---\ntype: Note\ntitle: A\n---\nA\n"}); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := run([]string{"kvt", "push", "--vault", root}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("exit code = %d, stderr = %q", code, stderr.String())
+	}
+	got := strings.TrimSpace(gitOutput(t, remote, "rev-parse", "refs/heads/main"))
+	want := strings.TrimSpace(gitOutput(t, root, "rev-parse", "HEAD"))
+	if got != want {
+		t.Fatalf("remote head = %q, want %q, stdout=%q", got, want, stdout.String())
+	}
+}
+
 func TestRunServeRejectsUninitializedVault(t *testing.T) {
 	root := t.TempDir()
 	var stdout bytes.Buffer
@@ -212,4 +246,20 @@ func corruptFTSRows(t *testing.T, root string, docPath string) {
 	if _, err := db.Exec(`DELETE FROM kb_fts WHERE path = ?`, docPath); err != nil {
 		t.Fatalf("corrupt fts rows: %v", err)
 	}
+}
+
+func gitOutput(t *testing.T, root string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = root
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %s failed: %v\n%s", strings.Join(args, " "), err, string(out))
+	}
+	return string(out)
+}
+
+func runGit(t *testing.T, root string, args ...string) {
+	t.Helper()
+	_ = gitOutput(t, root, args...)
 }
