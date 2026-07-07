@@ -122,7 +122,7 @@ func (c Client) Commit(opts CommitOptions) (CommitResult, error) {
 	paths := opts.Paths
 	scoped := len(paths) > 0
 	if len(paths) > 0 {
-		paths = c.filterIgnored(paths)
+		paths = filterRuntimePaths(paths)
 		if len(paths) == 0 {
 			hash, _ := c.head()
 			return CommitResult{
@@ -292,21 +292,21 @@ func (c Client) add(paths []string) error {
 		return err
 	}
 
-	paths = c.filterIgnored(paths)
+	paths = filterRuntimePaths(paths)
 	if len(paths) == 0 {
 		return nil
 	}
 
-	args := []string{"add", "--all", "--"}
+	args := []string{"add", "--all", "--force", "--"}
 	args = append(args, paths...)
 	_, err := c.run(context.Background(), nil, args...)
 	return err
 }
 
-func (c Client) filterIgnored(paths []string) []string {
+func filterRuntimePaths(paths []string) []string {
 	kept := make([]string, 0, len(paths))
 	for _, path := range paths {
-		if isRuntimePath(path) || c.isIgnored(path) {
+		if isRuntimePath(path) {
 			continue
 		}
 		kept = append(kept, path)
@@ -317,12 +317,6 @@ func (c Client) filterIgnored(paths []string) []string {
 func isRuntimePath(path string) bool {
 	path = strings.TrimPrefix(strings.ReplaceAll(path, "\\", "/"), "./")
 	return path == ".kvt" || strings.HasPrefix(path, ".kvt/")
-}
-
-func (c Client) isIgnored(path string) bool {
-	cmd := exec.CommandContext(context.Background(), "git", "check-ignore", "-q", "--", path)
-	cmd.Dir = c.root
-	return cmd.Run() == nil
 }
 
 func (c Client) diffCached(paths []string) (string, error) {

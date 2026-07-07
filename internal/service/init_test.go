@@ -181,6 +181,29 @@ func TestInitAdoptionCreatesNestedIndexesEvenWhenRootIndexExists(t *testing.T) {
 	}
 }
 
+func TestInitAdoptionCommitsServiceOwnedIndexEvenWhenIgnored(t *testing.T) {
+	testutil.RequireGit(t)
+	root := t.TempDir()
+	runGit(t, root, "init", "-b", "trunk")
+	runGit(t, root, "config", "user.name", "test")
+	runGit(t, root, "config", "user.email", "test@example.com")
+	writeFile(t, filepath.Join(root, ".gitignore"), "index.md\n")
+	writeFile(t, filepath.Join(root, "notes", "existing.md"), "---\ntype: Note\ntitle: Existing\n---\nBody\n")
+	runGit(t, root, "add", ".gitignore", "notes/existing.md")
+	runGit(t, root, "commit", "-m", "seed")
+
+	if _, err := Init(t.Context(), InitRequest{VaultPath: root, Defaults: true}); err != nil {
+		t.Fatalf("Init adopt: %v", err)
+	}
+
+	if got := gitOutputAllowExit1(t, root, "ls-files", "--cached", "--", "index.md"); got != "index.md\n" {
+		t.Fatalf("tracked index = %q", got)
+	}
+	if got := gitOutput(t, root, "show", "--pretty=format:", "--name-only", "HEAD"); !strings.Contains(got, "index.md") {
+		t.Fatalf("init commit omitted index.md: %q", got)
+	}
+}
+
 func TestInitAdoptionRejectsInvalidMarkdownPaths(t *testing.T) {
 	testutil.RequireGit(t)
 	root := t.TempDir()
