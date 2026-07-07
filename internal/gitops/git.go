@@ -154,7 +154,7 @@ func (c Client) Commit(opts CommitOptions) (CommitResult, error) {
 	}
 	if scoped {
 		args = append(args, "--")
-		args = append(args, paths...)
+		args = append(args, scopedPathspec(paths)...)
 	}
 	env := authorEnv(opts)
 	if _, err := c.run(context.Background(), env, args...); err != nil {
@@ -298,7 +298,7 @@ func (c Client) add(paths []string) error {
 	}
 
 	args := []string{"add", "--all", "--force", "--"}
-	args = append(args, paths...)
+	args = append(args, scopedPathspec(paths)...)
 	_, err := c.run(context.Background(), nil, args...)
 	return err
 }
@@ -319,11 +319,16 @@ func isRuntimePath(path string) bool {
 	return path == ".kvt" || strings.HasPrefix(path, ".kvt/")
 }
 
+func scopedPathspec(paths []string) []string {
+	pathspec := append([]string{}, paths...)
+	return append(pathspec, ":(exclude).kvt", ":(exclude).kvt/**")
+}
+
 func (c Client) diffCached(paths []string) (string, error) {
 	args := []string{"diff", "--cached", "--name-only"}
 	if len(paths) > 0 {
 		args = append(args, "--")
-		args = append(args, paths...)
+		args = append(args, scopedPathspec(paths)...)
 	}
 	return c.run(context.Background(), nil, args...)
 }
