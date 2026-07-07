@@ -78,7 +78,7 @@ func (db *DB) RemoveDocument(ctx context.Context, docPath string) error {
 	}
 	defer tx.Rollback()
 
-	if err := deletePathRows(ctx, tx, docPath, true); err != nil {
+	if err := deletePathRows(ctx, tx, docPath, false); err != nil {
 		return err
 	}
 	return tx.Commit()

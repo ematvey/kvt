@@ -3,6 +3,7 @@ package index
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -57,7 +58,19 @@ func TestApplyDocumentIndexesFTSFieldsAndLinks(t *testing.T) {
 	}
 }
 
-func TestRemoveDocumentDeletesRowsAndInboundLinks(t *testing.T) {
+func TestSchemaUsesFTS5(t *testing.T) {
+	db := openTempDB(t)
+
+	var sql string
+	if err := db.sql.QueryRow(`SELECT sql FROM sqlite_master WHERE name = 'kb_fts'`).Scan(&sql); err != nil {
+		t.Fatalf("schema query: %v", err)
+	}
+	if !strings.Contains(strings.ToLower(sql), "fts5") {
+		t.Fatalf("kb_fts schema = %q", sql)
+	}
+}
+
+func TestRemoveDocumentDeletesRowsButPreservesInboundLinks(t *testing.T) {
 	db := openTempDB(t)
 	if err := db.ApplyDocument(t.Context(), IndexedDocument{
 		Path:  "people/alice.md",
@@ -73,12 +86,23 @@ func TestRemoveDocumentDeletesRowsAndInboundLinks(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("ApplyDocument: %v", err)
 	}
+	if err := db.ApplyDocument(t.Context(), IndexedDocument{
+		Path:  "systems/db.md",
+		Hash:  "h2",
+		Title: "DB",
+		Type:  "System",
+		Chunks: []Chunk{
+			{Ordinal: 0, Text: "postgres cluster"},
+		},
+	}); err != nil {
+		t.Fatalf("Apply target document: %v", err)
+	}
 
-	if err := db.RemoveDocument(t.Context(), "people/alice.md"); err != nil {
+	if err := db.RemoveDocument(t.Context(), "systems/db.md"); err != nil {
 		t.Fatalf("RemoveDocument: %v", err)
 	}
 
-	grep, err := db.Grep(t.Context(), GrepRequest{Query: "primary", Limit: 10})
+	grep, err := db.Grep(t.Context(), GrepRequest{Query: "postgres", Limit: 10})
 	if err != nil {
 		t.Fatalf("Grep: %v", err)
 	}
@@ -90,7 +114,7 @@ func TestRemoveDocumentDeletesRowsAndInboundLinks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Backlinks: %v", err)
 	}
-	if len(backlinks) != 0 {
+	if len(backlinks) != 1 || backlinks[0].FromPath != "people/alice.md" {
 		t.Fatalf("backlinks = %#v", backlinks)
 	}
 }

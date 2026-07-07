@@ -24,7 +24,7 @@ CREATE TABLE IF NOT EXISTS kb_chunks (
 	PRIMARY KEY (path, ordinal)
 );
 
-CREATE VIRTUAL TABLE IF NOT EXISTS kb_fts USING fts4(
+CREATE VIRTUAL TABLE IF NOT EXISTS kb_fts USING fts5(
 	path,
 	ordinal,
 	title,
@@ -56,19 +56,23 @@ CREATE TABLE IF NOT EXISTS kb_meta (
 );
 `
 
-func (db *DB) init() error {
+func (db *DB) init(opts Options) error {
 	if _, err := db.sql.Exec(baseSchema); err != nil {
 		return err
 	}
 	if err := db.setMeta(context.Background(), "schema_version", "1"); err != nil {
 		return err
 	}
-	return db.initVectorSupport()
+	return db.initVectorSupport(opts)
 }
 
-func (db *DB) initVectorSupport() error {
+func (db *DB) initVectorSupport(opts Options) error {
 	db.vecAvailable = false
 	db.vecStatus = "unavailable"
+	if !opts.EnableVector {
+		db.vecStatus = "unavailable: disabled"
+		return db.setMeta(context.Background(), "vec_status", db.vecStatus)
+	}
 
 	var version string
 	if err := db.sql.QueryRow(`SELECT vec_version()`).Scan(&version); err != nil {

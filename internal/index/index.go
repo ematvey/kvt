@@ -3,15 +3,17 @@ package index
 import (
 	"database/sql"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
-	"sync"
 
-	sqlitevec "github.com/asg017/sqlite-vec-go-bindings/cgo"
-	_ "github.com/mattn/go-sqlite3"
+	_ "github.com/ncruces/go-sqlite3/driver"
+	_ "github.com/ncruces/go-sqlite3/embed"
 )
 
-type Options struct{}
+type Options struct {
+	EnableVector bool
+}
 
 type DB struct {
 	sql          *sql.DB
@@ -43,18 +45,23 @@ type Link struct {
 	Field    string
 }
 
-var registerVec sync.Once
-
-func Open(path string, _ Options) (*DB, error) {
+func Open(path string, opts Options) (*DB, error) {
 	if path == "" {
 		return nil, fmt.Errorf("index path is required")
 	}
-	registerVec.Do(sqlitevec.Auto)
 
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, err
 	}
-	sqlDB, err := sql.Open("sqlite3", path+"?_busy_timeout=5000&_foreign_keys=on")
+	dsn := url.URL{
+		Scheme: "file",
+		Path:   path,
+	}
+	query := dsn.Query()
+	query.Add("_pragma", "busy_timeout(5000)")
+	query.Add("_pragma", "foreign_keys(1)")
+	dsn.RawQuery = query.Encode()
+	sqlDB, err := sql.Open("sqlite3", dsn.String())
 	if err != nil {
 		return nil, err
 	}
@@ -62,7 +69,7 @@ func Open(path string, _ Options) (*DB, error) {
 		sql:       sqlDB,
 		vecStatus: "unavailable",
 	}
-	if err := db.init(); err != nil {
+	if err := db.init(opts); err != nil {
 		_ = sqlDB.Close()
 		return nil, err
 	}

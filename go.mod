@@ -4,9 +4,10 @@ go 1.25.0
 
 require gopkg.in/yaml.v3 v3.0.1
 
-require (
-	github.com/asg017/sqlite-vec-go-bindings v0.1.6
-	github.com/mattn/go-sqlite3 v1.14.47
-)
+require github.com/ncruces/go-sqlite3 v0.17.1
 
-replace github.com/asg017/sqlite-vec-go-bindings => ./third_party/sqlite-vec-go-bindings
+require (
+	github.com/ncruces/julianday v1.0.0 // indirect
+	github.com/tetratelabs/wazero v1.7.3 // indirect
+	golang.org/x/sys v0.22.0 // indirect
+)

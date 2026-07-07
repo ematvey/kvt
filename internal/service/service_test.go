@@ -349,6 +349,55 @@ func TestReadReturnsBacklinksFromIndex(t *testing.T) {
 	}
 }
 
+func TestBacklinksSurviveTargetDeleteAndRecreate(t *testing.T) {
+	testutil.RequireGit(t)
+	h := newServiceHarness(t)
+
+	if _, err := h.service.Write(t.Context(), WriteRequest{
+		Path:    "systems/db.md",
+		Content: "---\ntype: System\ntitle: DB\ndescription: Primary\n---\n",
+		Agent:   "test-agent",
+	}); err != nil {
+		t.Fatalf("write system: %v", err)
+	}
+	if _, err := h.service.Write(t.Context(), WriteRequest{
+		Path:    "people/alice.md",
+		Content: "---\ntype: Person\ntitle: Alice\ndescription: DBA\n---\nSee [DB](../systems/db.md).\n",
+		Agent:   "test-agent",
+	}); err != nil {
+		t.Fatalf("write person: %v", err)
+	}
+	first, err := h.service.Read(t.Context(), ReadRequest{Path: "systems/db.md"})
+	if err != nil {
+		t.Fatalf("Read before delete: %v", err)
+	}
+	if len(first.Backlinks) != 1 {
+		t.Fatalf("initial backlinks = %#v", first.Backlinks)
+	}
+
+	if _, err := h.service.Delete(t.Context(), DeleteRequest{
+		Path:  "systems/db.md",
+		Agent: "test-agent",
+	}); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if _, err := h.service.Write(t.Context(), WriteRequest{
+		Path:    "systems/db.md",
+		Content: "---\ntype: System\ntitle: DB\ndescription: Restored\n---\n",
+		Agent:   "test-agent",
+	}); err != nil {
+		t.Fatalf("rewrite system: %v", err)
+	}
+
+	got, err := h.service.Read(t.Context(), ReadRequest{Path: "systems/db.md"})
+	if err != nil {
+		t.Fatalf("Read after recreate: %v", err)
+	}
+	if len(got.Backlinks) != 1 || got.Backlinks[0].FromPath != "people/alice.md" {
+		t.Fatalf("backlinks after recreate = %#v", got.Backlinks)
+	}
+}
+
 type serviceHarness struct {
 	root    string
 	service *Service
