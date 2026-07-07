@@ -120,8 +120,17 @@ func (c Client) Commit(opts CommitOptions) (CommitResult, error) {
 		return CommitResult{}, fmt.Errorf("commit message is required")
 	}
 	paths := opts.Paths
+	scoped := len(paths) > 0
 	if len(paths) > 0 {
 		paths = c.filterIgnored(paths)
+		if len(paths) == 0 {
+			hash, _ := c.head()
+			return CommitResult{
+				Hash:      hash,
+				ShortHash: shortHash(hash),
+				Changed:   false,
+			}, nil
+		}
 	}
 	if err := c.add(paths); err != nil {
 		return CommitResult{}, err
@@ -143,7 +152,7 @@ func (c Client) Commit(opts CommitOptions) (CommitResult, error) {
 	if strings.TrimSpace(opts.Body) != "" {
 		args = append(args, "-m", opts.Body)
 	}
-	if len(paths) > 0 {
+	if scoped {
 		args = append(args, "--")
 		args = append(args, paths...)
 	}
