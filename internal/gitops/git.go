@@ -279,31 +279,32 @@ func (c Client) add(paths []string) error {
 		return err
 	}
 
-	regularPaths := make([]string, 0, len(paths))
-	forcedPaths := make([]string, 0, len(paths))
-	for _, path := range paths {
-		if strings.HasPrefix(path, ".kvt/") {
-			forcedPaths = append(forcedPaths, path)
-			continue
-		}
-		regularPaths = append(regularPaths, path)
+	paths = c.filterIgnored(paths)
+	if len(paths) == 0 {
+		return nil
 	}
 
-	if len(regularPaths) > 0 {
-		args := []string{"add", "--all", "--"}
-		args = append(args, regularPaths...)
-		if _, err := c.run(context.Background(), nil, args...); err != nil {
-			return err
+	args := []string{"add", "--all", "--"}
+	args = append(args, paths...)
+	_, err := c.run(context.Background(), nil, args...)
+	return err
+}
+
+func (c Client) filterIgnored(paths []string) []string {
+	kept := make([]string, 0, len(paths))
+	for _, path := range paths {
+		if c.isIgnored(path) {
+			continue
 		}
+		kept = append(kept, path)
 	}
-	if len(forcedPaths) > 0 {
-		args := []string{"add", "--force", "--"}
-		args = append(args, forcedPaths...)
-		if _, err := c.run(context.Background(), nil, args...); err != nil {
-			return err
-		}
-	}
-	return nil
+	return kept
+}
+
+func (c Client) isIgnored(path string) bool {
+	cmd := exec.CommandContext(context.Background(), "git", "check-ignore", "-q", "--", path)
+	cmd.Dir = c.root
+	return cmd.Run() == nil
 }
 
 func (c Client) diffCached(paths []string) (string, error) {

@@ -129,6 +129,33 @@ func TestCommitWithPathsIgnoresUnrelatedCachedChangesWhenTargetsAreUnchanged(t *
 	}
 }
 
+func TestCommitWithPathsDoesNotForceAddIgnoredRuntimeState(t *testing.T) {
+	root := initRepoWithCommit(t)
+	writeFile(t, filepath.Join(root, ".gitignore"), ".kvt/\n")
+	runGit(t, root, "add", ".gitignore")
+	runGit(t, root, "commit", "-m", "ignore runtime state")
+	writeFile(t, filepath.Join(root, ".kvt", "config.yaml"), "runtime: true\n")
+
+	headBefore := strings.TrimSpace(gitOutput(t, root, "rev-parse", "HEAD"))
+	result, err := Commit(root, CommitOptions{
+		Message: "should not force runtime config",
+		Paths:   []string{".kvt/config.yaml"},
+	})
+	if err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+	if result.Changed {
+		t.Fatalf("expected ignored runtime config to stay uncommitted, got %#v", result)
+	}
+	headAfter := strings.TrimSpace(gitOutput(t, root, "rev-parse", "HEAD"))
+	if headAfter != headBefore {
+		t.Fatalf("head changed from %q to %q", headBefore, headAfter)
+	}
+	if got := gitOutput(t, root, "ls-files", "--cached", "--", ".kvt/config.yaml"); got != "" {
+		t.Fatalf("runtime config tracked = %q", got)
+	}
+}
+
 func TestLogReturnsTerseEntries(t *testing.T) {
 	root := initRepoWithCommit(t)
 
