@@ -116,6 +116,42 @@ func TestVectorSearchStatementScopesPathPrefixInsideKNN(t *testing.T) {
 	}
 }
 
+func TestSearchVectorExecutesWhenSQLiteVecAvailable(t *testing.T) {
+	db := openVectorTempDBOrSkip(t, 2)
+	if err := db.ApplyDocument(t.Context(), IndexedDocument{
+		Path:      "systems/db.md",
+		Hash:      "h1",
+		Title:     "DB",
+		Type:      "System",
+		Timestamp: "2026-07-07T12:00:00Z",
+		Chunks: []Chunk{
+			{Ordinal: 0, Text: "database body"},
+		},
+	}); err != nil {
+		t.Fatalf("ApplyDocument: %v", err)
+	}
+	if err := db.UpsertEmbeddings(t.Context(), "systems/db.md", []ChunkEmbedding{
+		{Ordinal: 0, Vector: []float32{1, 0}, UpdatedAt: "2026-07-07T12:00:00Z"},
+	}); err != nil {
+		t.Fatalf("UpsertEmbeddings: %v", err)
+	}
+	if err := db.MarkEmbeddingState(t.Context(), "systems/db.md", "ready", "", "2026-07-07T12:00:00Z"); err != nil {
+		t.Fatalf("MarkEmbeddingState: %v", err)
+	}
+
+	hits, err := db.SearchVector(t.Context(), VectorRequest{
+		Embedding:  []float32{1, 0},
+		PathPrefix: "systems/",
+		Limit:      5,
+	})
+	if err != nil {
+		t.Fatalf("SearchVector: %v", err)
+	}
+	if len(hits) != 1 || hits[0].Path != "systems/db.md" {
+		t.Fatalf("hits = %#v", hits)
+	}
+}
+
 func TestVectorTableStatementUsesCosineDistanceAndRequiresDimension(t *testing.T) {
 	statement, err := vectorTableStatement(1536)
 	if err != nil {
@@ -274,6 +310,27 @@ func TestRefreshVectorProvenanceTreatsDisabledEmbeddingsAsDirty(t *testing.T) {
 	}
 	if summary.EmbeddingPendingCount != 1 {
 		t.Fatalf("pending count = %d", summary.EmbeddingPendingCount)
+	}
+}
+
+func TestRefreshVectorProvenanceClearsOrphanVectorRows(t *testing.T) {
+	db := openTempDB(t)
+	createFakeVectorTable(t, db)
+	db.vecAvailable = true
+	if err := db.setMeta(t.Context(), "embedder_model", "same-model"); err != nil {
+		t.Fatalf("set model: %v", err)
+	}
+	if err := db.setMeta(t.Context(), "embedder_dimensions", "2"); err != nil {
+		t.Fatalf("set dimensions: %v", err)
+	}
+	insertFakeVectorRow(t, db, "deleted/doc.md", 0)
+
+	if err := db.refreshVectorProvenance(t.Context(), Options{EnableVector: true, VectorDimension: 2, VectorModel: "same-model"}); err != nil {
+		t.Fatalf("refreshVectorProvenance: %v", err)
+	}
+
+	if got := fakeVectorRowCount(t, db, "deleted/doc.md"); got != 0 {
+		t.Fatalf("deleted doc vector rows = %d", got)
 	}
 }
 
@@ -501,6 +558,28 @@ func openTempDBAt(t *testing.T, dbPath string) *DB {
 			t.Fatalf("Close: %v", err)
 		}
 	})
+	return db
+}
+
+func openVectorTempDBOrSkip(t *testing.T, dimension int) *DB {
+	t.Helper()
+	dbPath := filepath.Join(t.TempDir(), "index.db")
+	db, err := Open(dbPath, Options{
+		EnableVector:    true,
+		VectorDimension: dimension,
+		VectorModel:     "test-model",
+	})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+	})
+	if !db.VectorAvailable() {
+		t.Skipf("sqlite-vec unavailable: %s", db.vecStatus)
+	}
 	return db
 }
 

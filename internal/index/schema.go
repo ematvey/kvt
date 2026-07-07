@@ -149,13 +149,14 @@ func (db *DB) refreshVectorProvenance(ctx context.Context, opts Options) error {
 	if err != nil {
 		return err
 	}
+	disabledDirty := false
 	if !changed {
-		changed, err = db.hasDisabledCurrentEmbeddings(ctx)
+		disabledDirty, err = db.hasDisabledCurrentEmbeddings(ctx)
 		if err != nil {
 			return err
 		}
 	}
-	if changed {
+	if changed || disabledDirty {
 		if _, err := db.sql.ExecContext(ctx, `DELETE FROM kb_vec`); err != nil {
 			return err
 		}
@@ -169,6 +170,8 @@ func (db *DB) refreshVectorProvenance(ctx context.Context, opts Options) error {
 		`); err != nil {
 			return err
 		}
+	} else if err := db.cleanupOrphanVectorRows(ctx); err != nil {
+		return err
 	}
 	if err := db.setMeta(ctx, "embedder_model", strings.TrimSpace(opts.VectorModel)); err != nil {
 		return err
@@ -187,6 +190,14 @@ func (db *DB) hasDisabledCurrentEmbeddings(ctx context.Context) (bool, error) {
 		return false, err
 	}
 	return count > 0, nil
+}
+
+func (db *DB) cleanupOrphanVectorRows(ctx context.Context) error {
+	_, err := db.sql.ExecContext(ctx, `
+		DELETE FROM kb_vec
+		WHERE path NOT IN (SELECT path FROM kb_docs)
+	`)
+	return err
 }
 
 func (db *DB) vectorProvenanceChanged(ctx context.Context, opts Options) (bool, error) {

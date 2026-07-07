@@ -2,14 +2,18 @@ package service
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
+	"unsafe"
 
 	"github.com/ematvey/kvt/internal/config"
+	"github.com/ematvey/kvt/internal/index"
 	"github.com/ematvey/kvt/internal/testutil"
 )
 
@@ -234,6 +238,7 @@ func TestWriteDoesNotEnqueueEmbeddingWhenCommitFails(t *testing.T) {
 	testutil.RequireGit(t)
 	h := newServiceHarness(t)
 	h.service.embedQueue = make(chan embeddingJob, 1)
+	forceVectorAvailableForTest(t, h.service.index)
 
 	lockPath := filepath.Join(h.root, ".git", "index.lock")
 	if err := os.WriteFile(lockPath, []byte("locked"), 0o644); err != nil {
@@ -253,6 +258,13 @@ func TestWriteDoesNotEnqueueEmbeddingWhenCommitFails(t *testing.T) {
 	case job := <-h.service.embedQueue:
 		t.Fatalf("queued embedding for failed commit: %#v", job)
 	default:
+	}
+	pending, err := h.service.index.PendingEmbeddingDocuments(t.Context(), true)
+	if err != nil {
+		t.Fatalf("PendingEmbeddingDocuments: %v", err)
+	}
+	if len(pending) != 0 {
+		t.Fatalf("pending embeddings after failed commit = %#v", pending)
 	}
 }
 
@@ -313,6 +325,42 @@ func TestServiceStartupQueuesPendingEmbeddings(t *testing.T) {
 		}
 	default:
 		t.Fatalf("expected pending embedding job")
+	}
+}
+
+func TestEnqueuePendingEmbeddingsDoesNotDropBacklogBeyondQueueCapacity(t *testing.T) {
+	h := newServiceHarness(t)
+	h.service.embedQueue = make(chan embeddingJob, 1)
+	docs := []index.EmbeddingJobDocument{
+		{Path: "a.md", Timestamp: "t1", Chunks: []index.Chunk{{Ordinal: 0, Text: "a"}}},
+		{Path: "b.md", Timestamp: "t2", Chunks: []index.Chunk{{Ordinal: 0, Text: "b"}}},
+	}
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- h.service.enqueueEmbeddingDocuments(t.Context(), docs)
+	}()
+
+	select {
+	case err := <-errCh:
+		t.Fatalf("enqueue completed before worker drained queue: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	first := <-h.service.embedQueue
+	if first.path != "a.md" {
+		t.Fatalf("first job = %#v", first)
+	}
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("enqueueEmbeddingDocuments: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatalf("enqueue did not complete")
+	}
+	second := <-h.service.embedQueue
+	if second.path != "b.md" {
+		t.Fatalf("second job = %#v", second)
 	}
 }
 
@@ -541,6 +589,26 @@ func (w waitingEmbedder) Embed(context.Context, []string) ([][]float32, error) {
 		close(w.started)
 	}
 	select {}
+}
+
+func forceVectorAvailableForTest(t *testing.T, db *index.DB) {
+	t.Helper()
+	value := reflect.ValueOf(db).Elem()
+	vecField := value.FieldByName("vecAvailable")
+	reflect.NewAt(vecField.Type(), unsafe.Pointer(vecField.UnsafeAddr())).Elem().SetBool(true)
+
+	sqlField := value.FieldByName("sql")
+	sqlDB := reflect.NewAt(sqlField.Type(), unsafe.Pointer(sqlField.UnsafeAddr())).Elem().Interface().(*sql.DB)
+	if _, err := sqlDB.Exec(`
+		CREATE TABLE IF NOT EXISTS kb_vec (
+			chunk_id TEXT PRIMARY KEY,
+			path TEXT NOT NULL,
+			ordinal INTEGER NOT NULL,
+			embedding TEXT NOT NULL
+		)
+	`); err != nil {
+		t.Fatalf("create fake kb_vec: %v", err)
+	}
 }
 
 func newServiceHarness(t *testing.T) serviceHarness {
