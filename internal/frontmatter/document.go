@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -94,7 +95,7 @@ func writeYAMLField(b *bytes.Buffer, key string, value any) error {
 		return fmt.Errorf("render %q: %w", key, err)
 	}
 	lines := strings.Split(rendered, "\n")
-	if len(lines) == 1 {
+	if len(lines) == 1 && !isCompositeValue(value) {
 		b.WriteString(key)
 		b.WriteString(": ")
 		b.WriteString(lines[0])
@@ -112,6 +113,27 @@ func writeYAMLField(b *bytes.Buffer, key string, value any) error {
 		b.WriteByte('\n')
 	}
 	return nil
+}
+
+func isCompositeValue(v any) bool {
+	if v == nil {
+		return false
+	}
+	rv := reflect.ValueOf(v)
+	for rv.Kind() == reflect.Interface || rv.Kind() == reflect.Pointer {
+		if rv.IsNil() {
+			return false
+		}
+		rv = rv.Elem()
+	}
+	switch rv.Kind() {
+	case reflect.Array:
+		return true
+	case reflect.Slice, reflect.Map:
+		return !rv.IsNil()
+	default:
+		return false
+	}
 }
 
 func renderYAMLValue(value any) (string, error) {
