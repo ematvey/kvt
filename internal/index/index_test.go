@@ -70,6 +70,56 @@ func TestSchemaUsesFTS5(t *testing.T) {
 	}
 }
 
+func TestVectorSearchStatementUsesSQLiteVecKNNShape(t *testing.T) {
+	query, args := vectorSearchStatement([]float32{1, 0}, 25)
+	normalized := strings.ToLower(query)
+	if !strings.Contains(normalized, "v.embedding match ?") {
+		t.Fatalf("query missing vector match:\n%s", query)
+	}
+	if !strings.Contains(normalized, "k = ?") {
+		t.Fatalf("query missing k constraint:\n%s", query)
+	}
+	if strings.Contains(normalized, " limit ") {
+		t.Fatalf("query should not add LIMIT to vec0 KNN search:\n%s", query)
+	}
+	if strings.Contains(normalized, " like ") {
+		t.Fatalf("query should not filter vec0 metadata with LIKE:\n%s", query)
+	}
+	if strings.Count(normalized, "order by") != 1 || !strings.Contains(normalized, "order by v.distance asc") {
+		t.Fatalf("query should order only by distance:\n%s", query)
+	}
+	if len(args) != 2 || args[0] != "[1,0]" || args[1] != 25 {
+		t.Fatalf("args = %#v", args)
+	}
+}
+
+func TestApplyDocumentClearsExistingVectorRows(t *testing.T) {
+	db := openTempDB(t)
+	createFakeVectorTable(t, db)
+	db.vecAvailable = true
+	insertFakeVectorRow(t, db, "people/alice.md", 0)
+	insertFakeVectorRow(t, db, "people/bob.md", 0)
+
+	if err := db.ApplyDocument(t.Context(), IndexedDocument{
+		Path:  "people/alice.md",
+		Hash:  "h1",
+		Title: "Alice",
+		Type:  "Person",
+		Chunks: []Chunk{
+			{Ordinal: 0, Text: "Alice owns the primary database"},
+		},
+	}); err != nil {
+		t.Fatalf("ApplyDocument: %v", err)
+	}
+
+	if got := fakeVectorRowCount(t, db, "people/alice.md"); got != 0 {
+		t.Fatalf("alice vector rows = %d", got)
+	}
+	if got := fakeVectorRowCount(t, db, "people/bob.md"); got != 1 {
+		t.Fatalf("bob vector rows = %d", got)
+	}
+}
+
 func TestRemoveDocumentDeletesRowsButPreservesInboundLinks(t *testing.T) {
 	db := openTempDB(t)
 	if err := db.ApplyDocument(t.Context(), IndexedDocument{
@@ -116,6 +166,32 @@ func TestRemoveDocumentDeletesRowsButPreservesInboundLinks(t *testing.T) {
 	}
 	if len(backlinks) != 1 || backlinks[0].FromPath != "people/alice.md" {
 		t.Fatalf("backlinks = %#v", backlinks)
+	}
+}
+
+func TestRemoveDocumentClearsExistingVectorRows(t *testing.T) {
+	db := openTempDB(t)
+	createFakeVectorTable(t, db)
+	db.vecAvailable = true
+	if err := db.ApplyDocument(t.Context(), IndexedDocument{
+		Path:  "people/alice.md",
+		Hash:  "h1",
+		Title: "Alice",
+		Type:  "Person",
+		Chunks: []Chunk{
+			{Ordinal: 0, Text: "Alice owns the primary database"},
+		},
+	}); err != nil {
+		t.Fatalf("ApplyDocument: %v", err)
+	}
+	insertFakeVectorRow(t, db, "people/alice.md", 0)
+
+	if err := db.RemoveDocument(t.Context(), "people/alice.md"); err != nil {
+		t.Fatalf("RemoveDocument: %v", err)
+	}
+
+	if got := fakeVectorRowCount(t, db, "people/alice.md"); got != 0 {
+		t.Fatalf("alice vector rows = %d", got)
 	}
 }
 
@@ -191,4 +267,36 @@ func mustWriteFile(t *testing.T, path string, content string) {
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
+}
+
+func createFakeVectorTable(t *testing.T, db *DB) {
+	t.Helper()
+	if _, err := db.sql.Exec(`
+		CREATE TABLE kb_vec (
+			chunk_id TEXT PRIMARY KEY,
+			path TEXT NOT NULL,
+			ordinal INTEGER NOT NULL,
+			embedding TEXT NOT NULL
+		)
+	`); err != nil {
+		t.Fatalf("create fake kb_vec: %v", err)
+	}
+}
+
+func insertFakeVectorRow(t *testing.T, db *DB, docPath string, ordinal int) {
+	t.Helper()
+	if _, err := db.sql.Exec(`
+		INSERT INTO kb_vec(chunk_id, path, ordinal, embedding) VALUES(?, ?, ?, ?)
+	`, docPath+"#stale", docPath, ordinal, "[1,0]"); err != nil {
+		t.Fatalf("insert fake vector row: %v", err)
+	}
+}
+
+func fakeVectorRowCount(t *testing.T, db *DB, docPath string) int {
+	t.Helper()
+	var count int
+	if err := db.sql.QueryRow(`SELECT COUNT(*) FROM kb_vec WHERE path = ?`, docPath).Scan(&count); err != nil {
+		t.Fatalf("count fake vector rows: %v", err)
+	}
+	return count
 }

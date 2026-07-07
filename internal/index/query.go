@@ -269,20 +269,7 @@ func (db *DB) SearchVector(ctx context.Context, req VectorRequest) ([]SearchHit,
 	}
 
 	limit := normalizeLimit(req.Limit, 20)
-	query := `
-		SELECT v.path, d.title, d.type, CAST(v.ordinal AS INTEGER), c.text, c.text, v.distance
-		FROM kb_vec v
-		JOIN kb_docs d ON d.path = v.path
-		JOIN kb_chunks c ON c.path = v.path AND c.ordinal = CAST(v.ordinal AS INTEGER)
-		WHERE v.embedding MATCH ? AND k = ?
-	`
-	args := []any{vectorLiteral(req.Embedding), limit}
-	if req.PathPrefix != "" {
-		query += " AND v.path LIKE ?"
-		args = append(args, req.PathPrefix+"%")
-	}
-	query += " ORDER BY v.distance ASC, v.path ASC, CAST(v.ordinal AS INTEGER) ASC"
-	query += fmt.Sprintf(" LIMIT %d", limit)
+	query, args := vectorSearchStatement(req.Embedding, vectorCandidateLimit(limit, req.PathPrefix))
 
 	rows, err := db.sql.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -296,10 +283,39 @@ func (db *DB) SearchVector(ctx context.Context, req VectorRequest) ([]SearchHit,
 		if err := rows.Scan(&hit.Path, &hit.Title, &hit.Type, &hit.Ordinal, &hit.Snippet, &hit.Text, &hit.Score); err != nil {
 			return nil, err
 		}
+		if req.PathPrefix != "" && !strings.HasPrefix(hit.Path, req.PathPrefix) {
+			continue
+		}
 		hit.Score = -hit.Score
 		hits = append(hits, hit)
+		if len(hits) >= limit {
+			break
+		}
 	}
 	return hits, rows.Err()
+}
+
+func vectorSearchStatement(embedding []float32, candidateLimit int) (string, []any) {
+	query := `
+		SELECT v.path, d.title, d.type, CAST(v.ordinal AS INTEGER), c.text, c.text, v.distance
+		FROM kb_vec v
+		JOIN kb_docs d ON d.path = v.path
+		JOIN kb_chunks c ON c.path = v.path AND c.ordinal = CAST(v.ordinal AS INTEGER)
+		WHERE v.embedding MATCH ? AND k = ?
+		ORDER BY v.distance ASC
+	`
+	return query, []any{vectorLiteral(embedding), candidateLimit}
+}
+
+func vectorCandidateLimit(limit int, pathPrefix string) int {
+	if strings.TrimSpace(pathPrefix) == "" {
+		return limit
+	}
+	candidateLimit := limit * 10
+	if candidateLimit < 100 {
+		return 100
+	}
+	return candidateLimit
 }
 
 func (db *DB) UpsertEmbeddings(ctx context.Context, docPath string, chunks []ChunkEmbedding) error {

@@ -23,7 +23,7 @@ func (db *DB) ApplyDocument(ctx context.Context, doc IndexedDocument) error {
 	}
 	defer tx.Rollback()
 
-	if err := deletePathRows(ctx, tx, doc.Path, false); err != nil {
+	if err := deletePathRows(ctx, tx, doc.Path, false, db.vecAvailable); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `
@@ -92,7 +92,7 @@ func (db *DB) RemoveDocument(ctx context.Context, docPath string) error {
 	}
 	defer tx.Rollback()
 
-	if err := deletePathRows(ctx, tx, docPath, false); err != nil {
+	if err := deletePathRows(ctx, tx, docPath, false, db.vecAvailable); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -100,7 +100,7 @@ func (db *DB) RemoveDocument(ctx context.Context, docPath string) error {
 
 func deletePathRows(ctx context.Context, tx interface {
 	ExecContext(context.Context, string, ...any) (sql.Result, error)
-}, docPath string, removeInbound bool) error {
+}, docPath string, removeInbound bool, clearVectors bool) error {
 	statements := []string{
 		`DELETE FROM kb_docs WHERE path = ?`,
 		`DELETE FROM kb_chunks WHERE path = ?`,
@@ -108,6 +108,9 @@ func deletePathRows(ctx context.Context, tx interface {
 		`DELETE FROM kb_fields WHERE path = ?`,
 		`DELETE FROM kb_doc_embeddings WHERE path = ?`,
 		`DELETE FROM kb_links WHERE from_path = ?`,
+	}
+	if clearVectors {
+		statements = append(statements, `DELETE FROM kb_vec WHERE path = ?`)
 	}
 	if removeInbound {
 		statements = append(statements, `DELETE FROM kb_links WHERE to_path = ?`)
