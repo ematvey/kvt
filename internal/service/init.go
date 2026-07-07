@@ -86,20 +86,24 @@ func Init(ctx context.Context, req InitRequest) (InitResult, error) {
 		}
 	}
 
-	changed, err := ensureVaultFiles(root, branch)
+	changedPaths, err := ensureVaultFiles(root, branch)
 	if err != nil {
 		return InitResult{}, err
 	}
-	commitResult, err := gitops.Commit(root, gitops.CommitOptions{
-		Message:     "Initialize KVT vault",
-		AuthorName:  config.Default().Git.AuthorName,
-		AuthorEmail: config.Default().Git.AuthorEmail,
-	})
-	if err != nil {
-		return InitResult{}, err
-	}
-	if !commitResult.Changed {
-		changed = false
+	changed := len(changedPaths) > 0
+	if changed {
+		commitResult, err := gitops.Commit(root, gitops.CommitOptions{
+			Message:     "Initialize KVT vault",
+			Paths:       changedPaths,
+			AuthorName:  config.Default().Git.AuthorName,
+			AuthorEmail: config.Default().Git.AuthorEmail,
+		})
+		if err != nil {
+			return InitResult{}, err
+		}
+		if !commitResult.Changed {
+			changed = false
+		}
 	}
 	return InitResult{
 		Branch:  branch,
@@ -113,51 +117,42 @@ func initRepo(root string, branch string) error {
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("git init: %v: %s", err, strings.TrimSpace(string(out)))
 	}
-	if err := gitConfig(root, "user.name", config.Default().Git.AuthorName); err != nil {
-		return err
-	}
-	if err := gitConfig(root, "user.email", config.Default().Git.AuthorEmail); err != nil {
-		return err
-	}
 	return nil
 }
 
-func gitConfig(root string, key string, value string) error {
-	cmd := exec.Command("git", "config", key, value)
-	cmd.Dir = root
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("git config %s: %v: %s", key, err, strings.TrimSpace(string(out)))
-	}
-	return nil
-}
-
-func ensureVaultFiles(root string, branch string) (bool, error) {
-	changed := false
+func ensureVaultFiles(root string, branch string) ([]string, error) {
+	changedPaths := []string{}
 	fileChanged, err := ensureGitIgnore(root)
 	if err != nil {
-		return false, err
+		return nil, err
 	}
-	changed = changed || fileChanged
+	if fileChanged {
+		changedPaths = append(changedPaths, ".gitignore")
+	}
 
 	fileChanged, err = ensureDefaultConfig(root, branch)
 	if err != nil {
-		return false, err
+		return nil, err
 	}
-	changed = changed || fileChanged
+	if fileChanged {
+		changedPaths = append(changedPaths, filepath.ToSlash(filepath.Join(".kvt", "config.yaml")))
+	}
 
 	fileChanged, err = ensureStarterOntology(root)
 	if err != nil {
-		return false, err
+		return nil, err
 	}
-	changed = changed || fileChanged
+	if fileChanged {
+		changedPaths = append(changedPaths, "_ontology.yaml")
+	}
 
-	fileChanged, err = ensureIndexes(root)
+	indexPaths, err := ensureIndexes(root)
 	if err != nil {
-		return false, err
+		return nil, err
 	}
-	changed = changed || fileChanged
+	changedPaths = appendUniquePaths(changedPaths, indexPaths...)
 
-	return changed, nil
+	return changedPaths, nil
 }
 
 func ensureGitIgnore(root string) (bool, error) {
@@ -207,18 +202,17 @@ func ensureStarterOntology(root string) (bool, error) {
 	return true, os.WriteFile(path, data, 0o644)
 }
 
-func ensureIndexes(root string) (bool, error) {
-	if _, err := os.Stat(filepath.Join(root, "index.md")); err == nil {
-		return false, nil
-	} else if !os.IsNotExist(err) {
-		return false, err
-	}
-
+func ensureIndexes(root string) ([]string, error) {
 	paths, err := existingMarkdownPaths(root)
 	if err != nil {
-		return false, err
+		return nil, err
 	}
 	if len(paths) == 0 {
+		if _, err := os.Stat(filepath.Join(root, "index.md")); err == nil {
+			return nil, nil
+		} else if !os.IsNotExist(err) {
+			return nil, err
+		}
 		content, err := frontmatter.Render(frontmatter.Document{
 			Fields: map[string]any{
 				"okf_version": rootOKFVersion,
@@ -227,35 +221,24 @@ func ensureIndexes(root string) (bool, error) {
 			Body: []byte("# Index\n"),
 		})
 		if err != nil {
-			return false, err
+			return nil, err
 		}
-		return true, os.WriteFile(filepath.Join(root, "index.md"), content, 0o644)
+		return []string{"index.md"}, os.WriteFile(filepath.Join(root, "index.md"), content, 0o644)
 	}
 
-	changed := false
+	changedPaths := []string{}
 	for _, docPath := range paths {
-		written, err := regenerateIndexes(root, docPath)
+		writtenPaths, err := regenerateIndexes(root, docPath)
 		if err != nil {
-			return false, err
+			return nil, err
 		}
-		changed = changed || written
+		changedPaths = appendUniquePaths(changedPaths, writtenPaths...)
 	}
-	return changed, nil
+	return changedPaths, nil
 }
 
-func regenerateIndexes(root string, docPath pathutil.Path) (bool, error) {
-	before, err := snapshotIndexes(root)
-	if err != nil {
-		return false, err
-	}
-	if _, err := vault.RegenerateIndexes(root, docPath, 50, rootOKFVersion); err != nil {
-		return false, err
-	}
-	after, err := snapshotIndexes(root)
-	if err != nil {
-		return false, err
-	}
-	return !equalSnapshots(before, after), nil
+func regenerateIndexes(root string, docPath pathutil.Path) ([]string, error) {
+	return vault.RegenerateIndexes(root, docPath, 50, rootOKFVersion)
 }
 
 func existingMarkdownPaths(root string) ([]pathutil.Path, error) {
@@ -290,50 +273,6 @@ func existingMarkdownPaths(root string) ([]pathutil.Path, error) {
 	return paths, nil
 }
 
-func snapshotIndexes(root string) (map[string]string, error) {
-	snapshot := map[string]string{}
-	err := filepath.WalkDir(root, func(filePath string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if d.IsDir() {
-			if d.Name() == ".git" || d.Name() == ".kvt" {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if d.Name() != "index.md" {
-			return nil
-		}
-		data, err := os.ReadFile(filePath)
-		if err != nil {
-			return err
-		}
-		rel, err := filepath.Rel(root, filePath)
-		if err != nil {
-			return err
-		}
-		snapshot[filepath.ToSlash(rel)] = string(data)
-		return nil
-	})
-	if err != nil {
-		return nil, err
-	}
-	return snapshot, nil
-}
-
-func equalSnapshots(a map[string]string, b map[string]string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for key, value := range a {
-		if b[key] != value {
-			return false
-		}
-	}
-	return true
-}
-
 func hasGitRepo(root string) (bool, error) {
 	_, err := os.Stat(filepath.Join(root, ".git"))
 	if err == nil {
@@ -351,4 +290,19 @@ func isEmptyDir(root string) (bool, error) {
 		return false, err
 	}
 	return len(entries) == 0, nil
+}
+
+func appendUniquePaths(paths []string, more ...string) []string {
+	seen := make(map[string]struct{}, len(paths)+len(more))
+	for _, path := range paths {
+		seen[path] = struct{}{}
+	}
+	for _, path := range more {
+		if _, ok := seen[path]; ok {
+			continue
+		}
+		seen[path] = struct{}{}
+		paths = append(paths, path)
+	}
+	return paths
 }

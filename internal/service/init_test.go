@@ -73,6 +73,72 @@ func TestInitAdoptsExistingGitRepoWithoutRewritingTrackedContent(t *testing.T) {
 	}
 }
 
+func TestInitAdoptionCommitsOnlyKVTFilesWhenRepoIsDirty(t *testing.T) {
+	testutil.RequireGit(t)
+	root := t.TempDir()
+	runGit(t, root, "init", "-b", "trunk")
+	runGit(t, root, "config", "user.name", "test")
+	runGit(t, root, "config", "user.email", "test@example.com")
+	writeFile(t, filepath.Join(root, "notes", "existing.md"), "---\ntype: Note\ntitle: Existing\n---\nBody\n")
+	writeFile(t, filepath.Join(root, "README.txt"), "seed\n")
+	runGit(t, root, "add", ".")
+	runGit(t, root, "commit", "-m", "seed")
+
+	writeFile(t, filepath.Join(root, "README.txt"), "user dirty change\n")
+
+	if _, err := Init(t.Context(), InitRequest{VaultPath: root, Defaults: true}); err != nil {
+		t.Fatalf("Init adopt: %v", err)
+	}
+
+	if got := gitOutput(t, root, "diff", "--name-only", "HEAD"); got != "README.txt\n" {
+		t.Fatalf("dirty diff = %q", got)
+	}
+	if got := gitOutput(t, root, "show", "--pretty=format:", "--name-only", "HEAD"); strings.Contains(got, "README.txt") {
+		t.Fatalf("init commit included unrelated dirty file: %q", got)
+	}
+}
+
+func TestInitFreshVaultDoesNotPersistRepoIdentity(t *testing.T) {
+	testutil.RequireGit(t)
+	root := t.TempDir()
+
+	if _, err := Init(t.Context(), InitRequest{VaultPath: root, Defaults: true}); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	if value, ok := gitConfigValue(t, root, "user.name"); ok {
+		t.Fatalf("unexpected local user.name = %q", value)
+	}
+	if value, ok := gitConfigValue(t, root, "user.email"); ok {
+		t.Fatalf("unexpected local user.email = %q", value)
+	}
+
+	wantAuthor := config.Default().Git.AuthorName + " <" + config.Default().Git.AuthorEmail + ">"
+	if got := strings.TrimSpace(gitOutput(t, root, "log", "-1", "--format=%an <%ae>")); got != wantAuthor {
+		t.Fatalf("author = %q, want %q", got, wantAuthor)
+	}
+}
+
+func TestInitAdoptionCreatesNestedIndexesEvenWhenRootIndexExists(t *testing.T) {
+	testutil.RequireGit(t)
+	root := t.TempDir()
+	runGit(t, root, "init", "-b", "trunk")
+	runGit(t, root, "config", "user.name", "test")
+	runGit(t, root, "config", "user.email", "test@example.com")
+	writeFile(t, filepath.Join(root, "people", "alice.md"), "---\ntype: Person\ntitle: Alice\n---\nBody\n")
+	writeFile(t, filepath.Join(root, "index.md"), "---\nokf_version: \"0.1\"\ntype: Index\n---\n# Index\n")
+	runGit(t, root, "add", ".")
+	runGit(t, root, "commit", "-m", "seed")
+
+	if _, err := Init(t.Context(), InitRequest{VaultPath: root, Defaults: true}); err != nil {
+		t.Fatalf("Init adopt: %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(root, "people", "index.md")); err != nil {
+		t.Fatalf("nested index missing: %v", err)
+	}
+}
+
 func TestInitIsIdempotent(t *testing.T) {
 	testutil.RequireGit(t)
 	root := t.TempDir()
@@ -170,4 +236,20 @@ func readFile(t *testing.T, path string) string {
 		t.Fatalf("read %s: %v", path, err)
 	}
 	return string(data)
+}
+
+func gitConfigValue(t *testing.T, root string, key string) (string, bool) {
+	t.Helper()
+	cmd := exec.Command("git", "config", "--local", "--get", key)
+	cmd.Dir = root
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		return strings.TrimSpace(string(out)), true
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+		return "", false
+	}
+	t.Fatalf("git config --local --get %s: %v\n%s", key, err, out)
+	return "", false
 }

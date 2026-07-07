@@ -117,6 +117,23 @@ func TestHistoryReturnsDiffForPath(t *testing.T) {
 	}
 }
 
+func TestPushUsesDefaultGitPushSemantics(t *testing.T) {
+	root := initRepoWithCommit(t)
+	remote := filepath.Join(t.TempDir(), "remote.git")
+	runGit(t, t.TempDir(), "init", "--bare", remote)
+	runGit(t, root, "remote", "add", "origin", remote)
+
+	if err := Push(root, "origin", "main"); err != nil {
+		t.Fatalf("Push: %v", err)
+	}
+
+	got := strings.TrimSpace(gitOutput(t, remote, "rev-parse", "refs/heads/main"))
+	want := strings.TrimSpace(gitOutput(t, root, "rev-parse", "HEAD"))
+	if got != want {
+		t.Fatalf("remote head = %q, want %q", got, want)
+	}
+}
+
 func initRepoWithCommit(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()

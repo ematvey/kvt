@@ -31,3 +31,18 @@ func TestRunInitWithDefaults(t *testing.T) {
 		t.Fatalf("config missing: %v", err)
 	}
 }
+
+func TestRunInitUsesKVTVaultFallback(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("KVT_VAULT", root)
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	code := run([]string{"kvt", "init", "--defaults"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("exit code = %d, stderr = %q", code, stderr.String())
+	}
+	if _, err := os.Stat(filepath.Join(root, ".kvt", "config.yaml")); err != nil {
+		t.Fatalf("config missing: %v", err)
+	}
+}

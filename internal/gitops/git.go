@@ -232,7 +232,7 @@ func (c Client) History(path string, cursor string, limit int) (HistoryPage, err
 }
 
 func (c Client) Push(remote string, branch string) error {
-	_, err := c.run(context.Background(), nil, "push", "--ff-only", remote, branch)
+	_, err := c.run(context.Background(), nil, "push", remote, branch)
 	return err
 }
 
@@ -270,13 +270,36 @@ func (c Client) isDirty() (bool, error) {
 }
 
 func (c Client) add(paths []string) error {
-	args := []string{"add", "--all"}
-	if len(paths) > 0 {
-		args = append(args, "--")
-		args = append(args, paths...)
+	if len(paths) == 0 {
+		_, err := c.run(context.Background(), nil, "add", "--all")
+		return err
 	}
-	_, err := c.run(context.Background(), nil, args...)
-	return err
+
+	regularPaths := make([]string, 0, len(paths))
+	forcedPaths := make([]string, 0, len(paths))
+	for _, path := range paths {
+		if strings.HasPrefix(path, ".kvt/") {
+			forcedPaths = append(forcedPaths, path)
+			continue
+		}
+		regularPaths = append(regularPaths, path)
+	}
+
+	if len(regularPaths) > 0 {
+		args := []string{"add", "--all", "--"}
+		args = append(args, regularPaths...)
+		if _, err := c.run(context.Background(), nil, args...); err != nil {
+			return err
+		}
+	}
+	if len(forcedPaths) > 0 {
+		args := []string{"add", "--force", "--"}
+		args = append(args, forcedPaths...)
+		if _, err := c.run(context.Background(), nil, args...); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (c Client) diffCached() (string, error) {
