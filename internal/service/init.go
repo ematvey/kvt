@@ -268,7 +268,7 @@ func existingMarkdownPaths(root string) ([]pathutil.Path, error) {
 		}
 		normalized, err := pathutil.Normalize(filepath.ToSlash(rel))
 		if err != nil {
-			return nil
+			return fmt.Errorf("invalid markdown path %q: %w", filepath.ToSlash(rel), err)
 		}
 		paths = append(paths, normalized)
 		return nil
