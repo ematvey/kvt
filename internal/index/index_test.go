@@ -131,7 +131,7 @@ func TestSearchVectorExecutesWhenSQLiteVecAvailable(t *testing.T) {
 		t.Fatalf("ApplyDocument: %v", err)
 	}
 	if err := db.UpsertEmbeddings(t.Context(), "systems/db.md", []ChunkEmbedding{
-		{Ordinal: 0, Vector: []float32{1, 0}, UpdatedAt: "2026-07-07T12:00:00Z"},
+		{Ordinal: 0, Vector: []float32{1, 0}, UpdatedAt: "2026-07-07T12:00:00Z", Hash: "h1"},
 	}); err != nil {
 		t.Fatalf("UpsertEmbeddings: %v", err)
 	}
@@ -239,7 +239,7 @@ func TestVectorProvenanceChangeClearsVectorsAndMarksPending(t *testing.T) {
 		t.Fatalf("ApplyDocument: %v", err)
 	}
 	if err := db.UpsertEmbeddings(t.Context(), "people/alice.md", []ChunkEmbedding{
-		{Ordinal: 0, Vector: []float32{1, 0}, UpdatedAt: "2026-07-07T12:00:00Z"},
+		{Ordinal: 0, Vector: []float32{1, 0}, UpdatedAt: "2026-07-07T12:00:00Z", Hash: "h1"},
 	}); err != nil {
 		t.Fatalf("UpsertEmbeddings: %v", err)
 	}
@@ -400,7 +400,7 @@ func TestUpsertEmbeddingsRejectsStaleDocumentTimestamp(t *testing.T) {
 	}
 
 	err := db.UpsertEmbeddings(t.Context(), "people/alice.md", []ChunkEmbedding{
-		{Ordinal: 0, Vector: []float32{1, 0}, UpdatedAt: "2026-07-07T12:00:00Z"},
+		{Ordinal: 0, Vector: []float32{1, 0}, UpdatedAt: "2026-07-07T12:00:00Z", Hash: "h2"},
 	})
 	if !errors.Is(err, ErrStaleEmbedding) {
 		t.Fatalf("expected stale embedding error, got %v", err)
@@ -414,6 +414,31 @@ func TestUpsertEmbeddingsRejectsStaleDocumentTimestamp(t *testing.T) {
 	}
 	if summary.EmbeddingPendingCount != 1 || summary.EmbeddingFailedCount != 0 {
 		t.Fatalf("embedding counts = pending %d failed %d", summary.EmbeddingPendingCount, summary.EmbeddingFailedCount)
+	}
+}
+
+func TestUpsertEmbeddingsRejectsStaleDocumentHash(t *testing.T) {
+	db := openTempDB(t)
+	createFakeVectorTable(t, db)
+	db.vecAvailable = true
+	if err := db.ApplyDocument(t.Context(), IndexedDocument{
+		Path:      "people/alice.md",
+		Hash:      "h2",
+		Title:     "Alice",
+		Type:      "Person",
+		Timestamp: "2026-07-07T12:00:00Z",
+		Chunks: []Chunk{
+			{Ordinal: 0, Text: "new body"},
+		},
+	}); err != nil {
+		t.Fatalf("ApplyDocument: %v", err)
+	}
+
+	err := db.UpsertEmbeddings(t.Context(), "people/alice.md", []ChunkEmbedding{
+		{Ordinal: 0, Vector: []float32{1, 0}, UpdatedAt: "2026-07-07T12:00:00Z", Hash: "h1"},
+	})
+	if !errors.Is(err, ErrStaleEmbedding) {
+		t.Fatalf("expected stale embedding error, got %v", err)
 	}
 }
 
@@ -435,7 +460,7 @@ func TestUpsertEmbeddingsRejectsEmptyVectors(t *testing.T) {
 	}
 
 	err := db.UpsertEmbeddings(t.Context(), "people/alice.md", []ChunkEmbedding{
-		{Ordinal: 0, Vector: nil, UpdatedAt: "2026-07-07T12:00:00Z"},
+		{Ordinal: 0, Vector: nil, UpdatedAt: "2026-07-07T12:00:00Z", Hash: "h1"},
 	})
 	if err == nil {
 		t.Fatalf("expected empty vector error")

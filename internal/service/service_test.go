@@ -291,6 +291,41 @@ func TestReconcileQueuesAppliedDocumentsForEmbedding(t *testing.T) {
 	}
 }
 
+func TestReconcileUsesBlockingEmbeddingEnqueue(t *testing.T) {
+	testutil.RequireGit(t)
+	h := newServiceHarness(t)
+	h.service.embedQueue = make(chan embeddingJob, 1)
+	writeFile(t, filepath.Join(h.root, "notes", "a.md"), "---\ntype: Note\ntitle: A\n---\nA\n")
+	writeFile(t, filepath.Join(h.root, "notes", "b.md"), "---\ntype: Note\ntitle: B\n---\nB\n")
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := h.service.Reconcile(t.Context())
+		errCh <- err
+	}()
+
+	select {
+	case err := <-errCh:
+		t.Fatalf("reconcile completed before queue drained: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	first := <-h.service.embedQueue
+	if first.path != "notes/a.md" {
+		t.Fatalf("first job = %#v", first)
+	}
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("Reconcile: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatalf("reconcile did not complete")
+	}
+	second := <-h.service.embedQueue
+	if second.path != "notes/b.md" {
+		t.Fatalf("second job = %#v", second)
+	}
+}
+
 func TestServiceStartupQueuesPendingEmbeddings(t *testing.T) {
 	testutil.RequireGit(t)
 	h := newServiceHarness(t)

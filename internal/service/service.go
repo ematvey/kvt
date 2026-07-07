@@ -61,6 +61,7 @@ type preparedDocument struct {
 type embeddingJob struct {
 	path      string
 	timestamp string
+	hash      string
 	chunks    []index.Chunk
 }
 
@@ -352,6 +353,7 @@ func (s *Service) enqueueEmbedding(doc preparedDocument) {
 	job := embeddingJob{
 		path:      doc.indexed.Path,
 		timestamp: doc.timestamp,
+		hash:      doc.hash,
 		chunks:    append([]index.Chunk(nil), doc.indexed.Chunks...),
 	}
 	select {
@@ -368,6 +370,7 @@ func (s *Service) enqueueIndexedEmbedding(doc index.IndexedDocument) {
 	job := embeddingJob{
 		path:      doc.Path,
 		timestamp: doc.Timestamp,
+		hash:      doc.Hash,
 		chunks:    append([]index.Chunk(nil), doc.Chunks...),
 	}
 	select {
@@ -396,6 +399,7 @@ func (s *Service) enqueueEmbeddingDocuments(ctx context.Context, documents []ind
 		job := embeddingJob{
 			path:      doc.Path,
 			timestamp: doc.Timestamp,
+			hash:      doc.Hash,
 			chunks:    append([]index.Chunk(nil), doc.Chunks...),
 		}
 		select {
@@ -454,6 +458,7 @@ func (s *Service) runEmbeddingWorker() {
 				Ordinal:   ordinals[i],
 				Vector:    vector,
 				UpdatedAt: job.timestamp,
+				Hash:      job.hash,
 			})
 		}
 		if err := s.index.UpsertEmbeddings(context.Background(), job.path, payload); err != nil {

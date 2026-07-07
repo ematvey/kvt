@@ -29,8 +29,17 @@ func (s *Service) Reconcile(ctx context.Context) (index.ReconcileResult, error) 
 	if err != nil {
 		return index.ReconcileResult{}, err
 	}
+	documents := make([]index.EmbeddingJobDocument, 0, len(result.AppliedDocuments))
 	for _, doc := range result.AppliedDocuments {
-		s.enqueueIndexedEmbedding(doc)
+		documents = append(documents, index.EmbeddingJobDocument{
+			Path:      doc.Path,
+			Timestamp: doc.Timestamp,
+			Hash:      doc.Hash,
+			Chunks:    append([]index.Chunk(nil), doc.Chunks...),
+		})
+	}
+	if err := s.enqueueEmbeddingDocuments(ctx, documents); err != nil {
+		return index.ReconcileResult{}, err
 	}
 	return result, nil
 }

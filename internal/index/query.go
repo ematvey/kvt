@@ -64,11 +64,13 @@ type ChunkEmbedding struct {
 	Ordinal   int
 	Vector    []float32
 	UpdatedAt string
+	Hash      string
 }
 
 type EmbeddingJobDocument struct {
 	Path      string
 	Timestamp string
+	Hash      string
 	Chunks    []Chunk
 }
 
@@ -344,12 +346,19 @@ func (db *DB) UpsertEmbeddings(ctx context.Context, docPath string, chunks []Chu
 	if expectedTimestamp == "" {
 		return fmt.Errorf("embedding timestamp is required")
 	}
+	expectedHash := strings.TrimSpace(chunks[0].Hash)
+	if expectedHash == "" {
+		return fmt.Errorf("embedding hash is required")
+	}
 	for i, chunk := range chunks {
 		if len(chunk.Vector) == 0 {
 			return fmt.Errorf("embedding %d is empty", i)
 		}
 		if strings.TrimSpace(chunk.UpdatedAt) != expectedTimestamp {
 			return fmt.Errorf("embedding %d timestamp mismatch", i)
+		}
+		if strings.TrimSpace(chunk.Hash) != expectedHash {
+			return fmt.Errorf("embedding %d hash mismatch", i)
 		}
 	}
 
@@ -360,13 +369,14 @@ func (db *DB) UpsertEmbeddings(ctx context.Context, docPath string, chunks []Chu
 	defer tx.Rollback()
 
 	var currentTimestamp string
-	if err := tx.QueryRowContext(ctx, `SELECT timestamp FROM kb_docs WHERE path = ?`, docPath).Scan(&currentTimestamp); err != nil {
+	var currentHash string
+	if err := tx.QueryRowContext(ctx, `SELECT timestamp, hash FROM kb_docs WHERE path = ?`, docPath).Scan(&currentTimestamp, &currentHash); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrStaleEmbedding
 		}
 		return err
 	}
-	if currentTimestamp != expectedTimestamp {
+	if currentTimestamp != expectedTimestamp || currentHash != expectedHash {
 		return ErrStaleEmbedding
 	}
 
@@ -399,7 +409,7 @@ func (db *DB) PendingEmbeddingDocuments(ctx context.Context, includeFailed bool)
 		args = append(args, state)
 	}
 	query := fmt.Sprintf(`
-		SELECT d.path, d.timestamp, c.ordinal, c.text, c.embed_text
+		SELECT d.path, d.timestamp, d.hash, c.ordinal, c.text, c.embed_text
 		FROM kb_docs d
 		JOIN kb_doc_embeddings e ON e.path = d.path AND e.updated_at = d.timestamp
 		JOIN kb_chunks c ON c.path = d.path
@@ -417,8 +427,9 @@ func (db *DB) PendingEmbeddingDocuments(ctx context.Context, includeFailed bool)
 	for rows.Next() {
 		var docPath string
 		var timestamp string
+		var hash string
 		var chunk Chunk
-		if err := rows.Scan(&docPath, &timestamp, &chunk.Ordinal, &chunk.Text, &chunk.EmbedText); err != nil {
+		if err := rows.Scan(&docPath, &timestamp, &hash, &chunk.Ordinal, &chunk.Text, &chunk.EmbedText); err != nil {
 			return nil, err
 		}
 		idx, ok := indexByPath[docPath]
@@ -428,6 +439,7 @@ func (db *DB) PendingEmbeddingDocuments(ctx context.Context, includeFailed bool)
 			documents = append(documents, EmbeddingJobDocument{
 				Path:      docPath,
 				Timestamp: timestamp,
+				Hash:      hash,
 			})
 		}
 		documents[idx].Chunks = append(documents[idx].Chunks, chunk)
