@@ -1,0 +1,6 @@
+# Ignore local CLI build artifacts
+/kvt
+/kvt.exe
+
+# Ignore local vault runtime state when this repo is used as a vault during tests
+.kvt/
