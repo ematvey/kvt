@@ -621,6 +621,107 @@ func TestReadReturnsBacklinksFromIndex(t *testing.T) {
 	}
 }
 
+func TestReadSupportsLineRangesAndValidationWarnings(t *testing.T) {
+	testutil.RequireGit(t)
+	h := newServiceHarness(t)
+	if _, err := h.service.Write(t.Context(), WriteRequest{
+		Path:    "notes/a.md",
+		Content: "---\ntype: Note\ntitle: A\n---\nline one\nline two\nline three\n",
+		Agent:   "test-agent",
+	}); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	full, err := h.service.Read(t.Context(), ReadRequest{Path: "notes/a.md"})
+	if err != nil {
+		t.Fatalf("Read full: %v", err)
+	}
+	lines := strings.Split(full.Content, "\n")
+	lineTwo := 0
+	for i, line := range lines {
+		if line == "line two" {
+			lineTwo = i + 1
+			break
+		}
+	}
+	if lineTwo == 0 {
+		t.Fatalf("line two missing from %q", full.Content)
+	}
+
+	got, err := h.service.Read(t.Context(), ReadRequest{Path: "notes/a.md", StartLine: lineTwo, EndLine: lineTwo})
+	if err != nil {
+		t.Fatalf("Read range: %v", err)
+	}
+	if strings.TrimSpace(got.Content) != "line two" {
+		t.Fatalf("content = %q", got.Content)
+	}
+	if len(got.Warnings) == 0 || !strings.Contains(got.Warnings[0].Message, "unknown type") {
+		t.Fatalf("warnings = %#v", got.Warnings)
+	}
+	empty, err := h.service.Read(t.Context(), ReadRequest{Path: "notes/a.md", StartLine: 999})
+	if err != nil {
+		t.Fatalf("Read range past EOF: %v", err)
+	}
+	if empty.Content != "" {
+		t.Fatalf("past EOF content = %q", empty.Content)
+	}
+}
+
+func TestTypesIncludeDocumentCounts(t *testing.T) {
+	testutil.RequireGit(t)
+	h := newServiceHarness(t)
+	writeFile(t, filepath.Join(h.root, "_ontology.yaml"), "types:\n  System:\n    required: [title]\nrules: []\nunknown_types: warn\n")
+	for _, path := range []string{"systems/db.md", "systems/cache.md"} {
+		if _, err := h.service.Write(t.Context(), WriteRequest{
+			Path:    path,
+			Content: "---\ntype: System\ntitle: S\ndescription: service\n---\nBody\n",
+			Agent:   "test-agent",
+		}); err != nil {
+			t.Fatalf("Write %s: %v", path, err)
+		}
+	}
+
+	types, err := h.service.Types(t.Context())
+	if err != nil {
+		t.Fatalf("Types: %v", err)
+	}
+	for _, typ := range types.Types {
+		if typ.Name == "System" {
+			if typ.Count != 2 {
+				t.Fatalf("System count = %d", typ.Count)
+			}
+			return
+		}
+	}
+	t.Fatalf("System type missing in %#v", types.Types)
+}
+
+func TestHouseHowtoIsNotTreatedAsConcept(t *testing.T) {
+	testutil.RequireGit(t)
+	h := newServiceHarness(t)
+	writeFile(t, filepath.Join(h.root, "_howto.md"), "House rule: link incidents to systems.\n")
+	if _, err := h.service.Write(t.Context(), WriteRequest{
+		Path:    "notes/a.md",
+		Content: "---\ntype: Note\ntitle: A\n---\nA\n",
+		Agent:   "test-agent",
+	}); err != nil {
+		t.Fatalf("Write with _howto.md present: %v", err)
+	}
+	if _, err := h.service.Reconcile(t.Context()); err != nil {
+		t.Fatalf("Reconcile with _howto.md present: %v", err)
+	}
+	validate, err := h.service.Validate(t.Context(), ValidateRequest{})
+	if err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	if len(validate.Errors) != 0 {
+		t.Fatalf("validation errors = %#v", validate.Errors)
+	}
+	rootIndex := readFile(t, filepath.Join(h.root, "index.md"))
+	if strings.Contains(rootIndex, "_howto.md") {
+		t.Fatalf("root index includes _howto.md:\n%s", rootIndex)
+	}
+}
+
 func TestBacklinksSurviveTargetDeleteAndRecreate(t *testing.T) {
 	testutil.RequireGit(t)
 	h := newServiceHarness(t)

@@ -32,6 +32,7 @@ type TypeInfo struct {
 	Required []string
 	Optional []string
 	Fields   map[string]ontology.FieldDef
+	Count    int
 }
 
 type TypesResponse struct {
@@ -84,6 +85,10 @@ func (s *Service) Types(ctx context.Context) (TypesResponse, error) {
 	if err != nil {
 		return TypesResponse{}, err
 	}
+	summary, err := s.Summary(ctx, index.SummaryRequest{})
+	if err != nil {
+		return TypesResponse{}, err
+	}
 	names := make([]string, 0, len(schema.Types))
 	for name := range schema.Types {
 		names = append(names, name)
@@ -97,6 +102,7 @@ func (s *Service) Types(ctx context.Context) (TypesResponse, error) {
 			Required: append([]string(nil), def.Required...),
 			Optional: append([]string(nil), def.Optional...),
 			Fields:   def.Fields,
+			Count:    summary.CountsByType[name],
 		})
 	}
 	return resp, nil

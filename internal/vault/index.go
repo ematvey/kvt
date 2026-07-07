@@ -81,7 +81,7 @@ func renderIndex(root string, dir string, limit int, rootOKFVersion string) ([]b
 			})
 			continue
 		}
-		if filepath.Ext(name) != ".md" {
+		if !pathutil.IsConceptMarkdownPath(filepath.ToSlash(filepath.Join(dir, name))) {
 			continue
 		}
 		doc, err := readIndexDoc(filepath.Join(fullDir, name))

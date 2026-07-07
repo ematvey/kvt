@@ -279,12 +279,18 @@ func existingMarkdownPaths(root string) ([]pathutil.Path, error) {
 		if ignored {
 			return nil
 		}
+		if d.Name() == "index.md" {
+			if _, err := pathutil.Normalize(rel); err != nil {
+				return fmt.Errorf("invalid markdown path %q: %w", rel, err)
+			}
+			return nil
+		}
+		if !pathutil.IsConceptMarkdownPath(rel) {
+			return nil
+		}
 		normalized, err := pathutil.Normalize(rel)
 		if err != nil {
 			return fmt.Errorf("invalid markdown path %q: %w", rel, err)
-		}
-		if d.Name() == "index.md" {
-			return nil
 		}
 		paths = append(paths, normalized)
 		return nil

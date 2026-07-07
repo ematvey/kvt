@@ -178,7 +178,7 @@ func ValidateVault(root string, schema Schema) (ValidationReport, error) {
 			}
 			return nil
 		}
-		if filepath.Ext(d.Name()) != ".md" || d.Name() == "index.md" {
+		if filepath.Ext(d.Name()) != ".md" {
 			return nil
 		}
 		rel, err := filepath.Rel(root, filePath)
@@ -186,6 +186,9 @@ func ValidateVault(root string, schema Schema) (ValidationReport, error) {
 			return err
 		}
 		rel = filepath.ToSlash(rel)
+		if !pathutil.IsConceptMarkdownPath(rel) {
+			return nil
+		}
 		docPath, err := pathutil.Normalize(rel)
 		if err != nil {
 			report.Warnings = append(report.Warnings, Issue{

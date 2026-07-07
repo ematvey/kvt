@@ -201,7 +201,15 @@ func (s *Server) handleConceptPath(w http.ResponseWriter, r *http.Request) {
 	path := strings.TrimPrefix(r.URL.Path, "/concepts/")
 	switch r.Method {
 	case http.MethodGet:
-		resp, err := s.svc.Read(r.Context(), service.ReadRequest{Path: path})
+		startLine, endLine, ok := readLineRangeQuery(w, r)
+		if !ok {
+			return
+		}
+		resp, err := s.svc.Read(r.Context(), service.ReadRequest{
+			Path:      path,
+			StartLine: startLine,
+			EndLine:   endLine,
+		})
 		if err != nil {
 			writeServiceError(w, err)
 			return
@@ -494,6 +502,39 @@ func intQuery(r *http.Request, key string) int {
 	return parsed
 }
 
+func readLineRangeQuery(w http.ResponseWriter, r *http.Request) (int, int, bool) {
+	start, startSet, err := positiveIntQuery(r, "start_line")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error(), nil)
+		return 0, 0, false
+	}
+	end, endSet, err := positiveIntQuery(r, "end_line")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error(), nil)
+		return 0, 0, false
+	}
+	if startSet && endSet && start > end {
+		writeError(w, http.StatusBadRequest, "start_line must be <= end_line", nil)
+		return 0, 0, false
+	}
+	return start, end, true
+}
+
+func positiveIntQuery(r *http.Request, key string) (int, bool, error) {
+	value := strings.TrimSpace(r.URL.Query().Get(key))
+	if value == "" {
+		return 0, false, nil
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil {
+		return 0, true, fmt.Errorf("%s must be an integer", key)
+	}
+	if parsed <= 0 {
+		return 0, true, fmt.Errorf("%s must be a positive integer", key)
+	}
+	return parsed, true, nil
+}
+
 func summaryPayload(resp index.SummaryResponse) map[string]any {
 	return map[string]any{
 		"document_count":          resp.DocumentCount,
@@ -627,6 +668,7 @@ func readPayload(resp service.ReadResponse) map[string]any {
 		"hash":      resp.Hash,
 		"document":  resp.Document,
 		"backlinks": resp.Backlinks,
+		"warnings":  issuesPayload(resp.Warnings),
 	}
 }
 

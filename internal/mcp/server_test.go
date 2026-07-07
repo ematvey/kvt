@@ -3,6 +3,8 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -257,7 +259,79 @@ func TestHowtoResourceAndPromptOverMCP(t *testing.T) {
 	}
 }
 
+func TestHowtoIncludesVaultHouseRules(t *testing.T) {
+	svc, root := newMCPTestServiceWithRoot(t)
+	if err := os.WriteFile(filepath.Join(root, "_howto.md"), []byte("House rule: link incidents to systems.\n"), 0o644); err != nil {
+		t.Fatalf("write howto: %v", err)
+	}
+	server, err := NewServer(svc, openConfig())
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	session := connectMCPClient(t, server)
+
+	tool := callToolMap(t, session, "kvt_howto", map[string]any{})
+	if !strings.Contains(tool["text"].(string), "House rule: link incidents to systems.") {
+		t.Fatalf("tool howto = %#v", tool)
+	}
+	resource, err := session.ReadResource(t.Context(), &mcpsdk.ReadResourceParams{URI: howtoURI})
+	if err != nil {
+		t.Fatalf("ReadResource: %v", err)
+	}
+	if !strings.Contains(resource.Contents[0].Text, "House rule: link incidents to systems.") {
+		t.Fatalf("resource howto = %#v", resource.Contents)
+	}
+	prompt, err := session.GetPrompt(t.Context(), &mcpsdk.GetPromptParams{Name: "kvt_howto"})
+	if err != nil {
+		t.Fatalf("GetPrompt: %v", err)
+	}
+	text, ok := prompt.Messages[0].Content.(*mcpsdk.TextContent)
+	if !ok || !strings.Contains(text.Text, "House rule: link incidents to systems.") {
+		t.Fatalf("prompt content = %#v", prompt.Messages[0].Content)
+	}
+}
+
+func TestReadToolSupportsLineRangeAndWarnings(t *testing.T) {
+	svc := newMCPTestService(t)
+	server, err := NewServer(svc, openConfig())
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	session := connectMCPClient(t, server)
+	callToolMap(t, session, "kvt_write", map[string]any{
+		"path":    "notes/a.md",
+		"content": "---\ntype: Note\ntitle: A\n---\nline one\nline two\nline three\n",
+	})
+	full := callToolMap(t, session, "kvt_read", map[string]any{"path": "notes/a.md"})
+	lines := strings.Split(full["content"].(string), "\n")
+	lineTwo := 0
+	for i, line := range lines {
+		if line == "line two" {
+			lineTwo = i + 1
+			break
+		}
+	}
+	if lineTwo == 0 {
+		t.Fatalf("line two missing from %#v", full)
+	}
+
+	got := callToolMap(t, session, "kvt_read", map[string]any{"path": "notes/a.md", "start_line": lineTwo, "end_line": lineTwo})
+	if strings.TrimSpace(got["content"].(string)) != "line two" {
+		t.Fatalf("range read = %#v", got)
+	}
+	warnings, ok := got["warnings"].([]any)
+	if !ok || len(warnings) == 0 {
+		t.Fatalf("warnings = %#v", got["warnings"])
+	}
+}
+
 func newMCPTestService(t *testing.T) *service.Service {
+	t.Helper()
+	svc, _ := newMCPTestServiceWithRoot(t)
+	return svc
+}
+
+func newMCPTestServiceWithRoot(t *testing.T) (*service.Service, string) {
 	t.Helper()
 	testutil.RequireGit(t)
 	root := t.TempDir()
@@ -268,7 +342,7 @@ func newMCPTestService(t *testing.T) *service.Service {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	return svc
+	return svc, root
 }
 
 func openConfig() config.Config {

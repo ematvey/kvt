@@ -29,7 +29,7 @@ func NewServer(svc *service.Service, cfg config.Config) (*Server, error) {
 		toolNames: map[string]bool{},
 	}
 	registerTools(server, svc, cfg)
-	registerHowto(server)
+	registerHowto(server, svc)
 	return server, nil
 }
 
@@ -65,19 +65,23 @@ func RegisteredToolNames(s *Server) map[string]bool {
 	return out
 }
 
-func registerHowto(server *Server) {
+func registerHowto(server *Server, svc *service.Service) {
 	server.sdk.AddResource(&mcpsdk.Resource{
 		Name:        "kvt_howto",
 		Title:       "KVT howto",
 		URI:         howtoURI,
 		MIMEType:    "text/markdown",
 		Description: "Agent guidance for reading and writing KVT OKF files.",
-	}, func(context.Context, *mcpsdk.ReadResourceRequest) (*mcpsdk.ReadResourceResult, error) {
+	}, func(ctx context.Context, _ *mcpsdk.ReadResourceRequest) (*mcpsdk.ReadResourceResult, error) {
+		text, err := howtoText(ctx, svc)
+		if err != nil {
+			return nil, err
+		}
 		return &mcpsdk.ReadResourceResult{
 			Contents: []*mcpsdk.ResourceContents{{
 				URI:      howtoURI,
 				MIMEType: "text/markdown",
-				Text:     DefaultHowto(),
+				Text:     text,
 			}},
 		}, nil
 	})
@@ -85,13 +89,29 @@ func registerHowto(server *Server) {
 		Name:        "kvt_howto",
 		Title:       "KVT howto",
 		Description: "How to use KVT tools safely and keep OKF files valid.",
-	}, func(context.Context, *mcpsdk.GetPromptRequest) (*mcpsdk.GetPromptResult, error) {
+	}, func(ctx context.Context, _ *mcpsdk.GetPromptRequest) (*mcpsdk.GetPromptResult, error) {
+		text, err := howtoText(ctx, svc)
+		if err != nil {
+			return nil, err
+		}
 		return &mcpsdk.GetPromptResult{
 			Description: "KVT agent guidance",
 			Messages: []*mcpsdk.PromptMessage{{
 				Role:    mcpsdk.Role("user"),
-				Content: &mcpsdk.TextContent{Text: DefaultHowto()},
+				Content: &mcpsdk.TextContent{Text: text},
 			}},
 		}, nil
 	})
+}
+
+func howtoText(ctx context.Context, svc *service.Service) (string, error) {
+	text := DefaultHowto()
+	house, err := svc.HouseHowto(ctx)
+	if err != nil {
+		return "", err
+	}
+	if house != "" {
+		text += "\n\n# Vault House Rules\n\n" + house + "\n"
+	}
+	return text, nil
 }

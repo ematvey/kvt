@@ -32,7 +32,9 @@ type listInput struct {
 }
 
 type pathInput struct {
-	Path string `json:"path" jsonschema:"bundle-relative markdown path"`
+	Path      string `json:"path" jsonschema:"bundle-relative markdown path"`
+	StartLine int    `json:"start_line,omitempty" jsonschema:"1-based inclusive first line to read"`
+	EndLine   int    `json:"end_line,omitempty" jsonschema:"1-based inclusive last line to read"`
 }
 
 type pageInput struct {
@@ -133,10 +135,11 @@ type documentSummaryOutput struct {
 }
 
 type readOutput struct {
-	Path      string       `json:"path"`
-	Content   string       `json:"content"`
-	Hash      string       `json:"hash"`
-	Backlinks []linkOutput `json:"backlinks"`
+	Path      string        `json:"path"`
+	Content   string        `json:"content"`
+	Hash      string        `json:"hash"`
+	Backlinks []linkOutput  `json:"backlinks"`
+	Warnings  []issueOutput `json:"warnings"`
 }
 
 type linkOutput struct {
@@ -155,6 +158,7 @@ type typeInfoOutput struct {
 	Required []string                  `json:"required"`
 	Optional []string                  `json:"optional"`
 	Fields   map[string]fieldDefOutput `json:"fields"`
+	Count    int                       `json:"count"`
 }
 
 type fieldDefOutput struct {
@@ -254,8 +258,9 @@ func registerTools(server *Server, svc *service.Service, cfg config.Config) {
 			Push:                  pushStatusOutputFrom(push),
 		}, nil
 	})
-	addTool(server, "kvt_howto", "Return concise KVT workflow guidance for coding agents.", func(context.Context, emptyInput) (howtoOutput, error) {
-		return howtoOutput{Text: DefaultHowto()}, nil
+	addTool(server, "kvt_howto", "Return concise KVT workflow guidance for coding agents.", func(ctx context.Context, _ emptyInput) (howtoOutput, error) {
+		text, err := howtoText(ctx, svc)
+		return howtoOutput{Text: text}, err
 	})
 	addTool(server, "kvt_search", "Use first for semantic or keyword discovery across the vault.", func(ctx context.Context, in searchInput) (searchOutput, error) {
 		resp, err := svc.Search(ctx, service.SearchRequest{Query: in.Query, PathPrefix: in.PathPrefix, Limit: in.Limit})
@@ -283,7 +288,7 @@ func registerTools(server *Server, svc *service.Service, cfg config.Config) {
 		return budgetListOutput(in.Cursor, resp, cfg.Limits.MaxResponseChars)
 	})
 	addTool(server, "kvt_read", "Read one concept and return current content, hash, and backlinks.", func(ctx context.Context, in pathInput) (readOutput, error) {
-		resp, err := svc.Read(ctx, service.ReadRequest{Path: in.Path})
+		resp, err := svc.Read(ctx, service.ReadRequest{Path: in.Path, StartLine: in.StartLine, EndLine: in.EndLine})
 		return readOutputFrom(resp), err
 	})
 	addTool(server, "kvt_types", "List ontology types and field constraints.", func(ctx context.Context, _ emptyInput) (typesOutput, error) {
@@ -432,6 +437,7 @@ func readOutputFrom(resp service.ReadResponse) readOutput {
 		Content:   resp.Content,
 		Hash:      resp.Hash,
 		Backlinks: linksOutputFrom(resp.Backlinks),
+		Warnings:  issuesOutputFrom(resp.Warnings),
 	}
 }
 
@@ -447,6 +453,7 @@ func typesOutputFrom(resp service.TypesResponse) typesOutput {
 			Required: append([]string(nil), typ.Required...),
 			Optional: append([]string(nil), typ.Optional...),
 			Fields:   fields,
+			Count:    typ.Count,
 		})
 	}
 	return out

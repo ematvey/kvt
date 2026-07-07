@@ -21,3 +21,20 @@ func TestNormalizeAcceptsBundleRelativePath(t *testing.T) {
 		t.Fatalf("path = %q", p.String())
 	}
 }
+
+func TestIsConceptMarkdownPath(t *testing.T) {
+	tests := map[string]bool{
+		"people/alice.md":      true,
+		"_howto.md":            false,
+		"index.md":             false,
+		"people/index.md":      false,
+		"people/_howto.md":     true,
+		"people/readme.txt":    false,
+		"people/alice.md.back": false,
+	}
+	for path, want := range tests {
+		if got := IsConceptMarkdownPath(path); got != want {
+			t.Fatalf("IsConceptMarkdownPath(%q) = %v, want %v", path, got, want)
+		}
+	}
+}

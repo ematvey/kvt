@@ -59,14 +59,18 @@ func (db *DB) reconcile(ctx context.Context, root string, force bool) (Reconcile
 			}
 			return nil
 		}
-		if filepath.Ext(entry.Name()) != ".md" || entry.Name() == "index.md" {
+		if filepath.Ext(entry.Name()) != ".md" {
 			return nil
 		}
 		rel, err := filepath.Rel(root, filePath)
 		if err != nil {
 			return err
 		}
-		normalized, err := pathutil.Normalize(filepath.ToSlash(rel))
+		rel = filepath.ToSlash(rel)
+		if !pathutil.IsConceptMarkdownPath(rel) {
+			return nil
+		}
+		normalized, err := pathutil.Normalize(rel)
 		if err != nil {
 			return err
 		}

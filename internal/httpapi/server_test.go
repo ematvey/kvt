@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -106,6 +107,62 @@ func TestQueryAndMetadataRoutesOverHTTP(t *testing.T) {
 	assertOKWithKey(t, doJSON(t, handler, http.MethodGet, "/history/systems/db.md?limit=5", nil, ""), "entries")
 	assertOKWithKey(t, doJSON(t, handler, http.MethodPost, "/validate", map[string]any{}, ""), "errors")
 	assertOKWithKey(t, doJSON(t, handler, http.MethodGet, "/types", nil, ""), "types")
+}
+
+func TestReadConceptLineRangeAndWarningsOverHTTP(t *testing.T) {
+	cfg := config.Default()
+	svc := newHTTPTestService(t, cfg)
+	handler := NewServer(svc, cfg)
+
+	create := doJSON(t, handler, http.MethodPost, "/concepts", map[string]any{
+		"path":    "notes/a.md",
+		"content": "---\ntype: Mystery\ntitle: A\n---\nline one\nline two\nline three\n",
+	}, "")
+	if create.Code != http.StatusCreated {
+		t.Fatalf("POST status = %d body=%s", create.Code, create.Body.String())
+	}
+	full := doJSON(t, handler, http.MethodGet, "/concepts/notes/a.md", nil, "")
+	if full.Code != http.StatusOK {
+		t.Fatalf("full GET status = %d body=%s", full.Code, full.Body.String())
+	}
+	var fullPayload map[string]any
+	decodeBody(t, full, &fullPayload)
+	lineTwo := 0
+	for i, line := range strings.Split(fullPayload["content"].(string), "\n") {
+		if line == "line two" {
+			lineTwo = i + 1
+			break
+		}
+	}
+	if lineTwo == 0 {
+		t.Fatalf("line two missing from %#v", fullPayload)
+	}
+
+	rangePath := "/concepts/notes/a.md?start_line=" + strconv.Itoa(lineTwo) + "&end_line=" + strconv.Itoa(lineTwo)
+	ranged := doJSON(t, handler, http.MethodGet, rangePath, nil, "")
+	if ranged.Code != http.StatusOK {
+		t.Fatalf("range GET status = %d body=%s", ranged.Code, ranged.Body.String())
+	}
+	var rangedPayload map[string]any
+	decodeBody(t, ranged, &rangedPayload)
+	if strings.TrimSpace(rangedPayload["content"].(string)) != "line two" {
+		t.Fatalf("range payload = %#v", rangedPayload)
+	}
+	warnings, ok := rangedPayload["warnings"].([]any)
+	if !ok || len(warnings) == 0 {
+		t.Fatalf("warnings = %#v", rangedPayload["warnings"])
+	}
+
+	for _, path := range []string{
+		"/concepts/notes/a.md?start_line=nope",
+		"/concepts/notes/a.md?start_line=-1",
+		"/concepts/notes/a.md?start_line=7&end_line=6",
+	} {
+		res := doJSON(t, handler, http.MethodGet, path, nil, "")
+		if res.Code != http.StatusBadRequest {
+			t.Fatalf("%s status = %d body=%s", path, res.Code, res.Body.String())
+		}
+	}
 }
 
 func TestListAndGrepReturnPaginationCursor(t *testing.T) {

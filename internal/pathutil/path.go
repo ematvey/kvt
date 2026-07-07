@@ -10,6 +10,8 @@ import (
 
 var segmentPattern = regexp.MustCompile(`^[a-z0-9_][a-z0-9._-]*$`)
 
+const HouseHowtoPath = "_howto.md"
+
 type Path string
 
 func (p Path) String() string {
@@ -55,6 +57,22 @@ func Suggest(raw string) string {
 		cleaned = append(cleaned, part)
 	}
 	return strings.Join(cleaned, "/")
+}
+
+func IsConceptMarkdownPath(rel string) bool {
+	rel = strings.TrimSpace(strings.ReplaceAll(rel, "\\", "/"))
+	if rel == "" || rel == "." {
+		return false
+	}
+	rel = path.Clean(rel)
+	base := path.Base(rel)
+	if path.Ext(base) != ".md" {
+		return false
+	}
+	if base == "index.md" {
+		return false
+	}
+	return rel != HouseHowtoPath
 }
 
 func validate(raw string) error {

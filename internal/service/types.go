@@ -11,7 +11,9 @@ import (
 )
 
 type ReadRequest struct {
-	Path string
+	Path      string
+	StartLine int
+	EndLine   int
 }
 
 type ReadResponse struct {
@@ -20,6 +22,7 @@ type ReadResponse struct {
 	Hash      string
 	Document  frontmatter.Document
 	Backlinks []index.Link
+	Warnings  []ontology.Issue
 }
 
 type WriteRequest struct {
