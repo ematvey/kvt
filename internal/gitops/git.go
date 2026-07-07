@@ -119,10 +119,14 @@ func (c Client) Commit(opts CommitOptions) (CommitResult, error) {
 	if strings.TrimSpace(opts.Message) == "" {
 		return CommitResult{}, fmt.Errorf("commit message is required")
 	}
-	if err := c.add(opts.Paths); err != nil {
+	paths := opts.Paths
+	if len(paths) > 0 {
+		paths = c.filterIgnored(paths)
+	}
+	if err := c.add(paths); err != nil {
 		return CommitResult{}, err
 	}
-	diff, err := c.diffCached(opts.Paths)
+	diff, err := c.diffCached(paths)
 	if err != nil {
 		return CommitResult{}, err
 	}
@@ -139,9 +143,9 @@ func (c Client) Commit(opts CommitOptions) (CommitResult, error) {
 	if strings.TrimSpace(opts.Body) != "" {
 		args = append(args, "-m", opts.Body)
 	}
-	if len(opts.Paths) > 0 {
+	if len(paths) > 0 {
 		args = append(args, "--")
-		args = append(args, opts.Paths...)
+		args = append(args, paths...)
 	}
 	env := authorEnv(opts)
 	if _, err := c.run(context.Background(), env, args...); err != nil {

@@ -156,6 +156,32 @@ func TestCommitWithPathsDoesNotForceAddIgnoredRuntimeState(t *testing.T) {
 	}
 }
 
+func TestCommitWithPathsFiltersIgnoredRuntimeStateBeforeCommit(t *testing.T) {
+	root := initRepoWithCommit(t)
+	writeFile(t, filepath.Join(root, ".gitignore"), ".kvt/\n")
+	runGit(t, root, "add", ".gitignore")
+	runGit(t, root, "commit", "-m", "ignore runtime state")
+	writeFile(t, filepath.Join(root, "a.md"), "---\ntype: Note\ntitle: A\n---\nScoped\n")
+	writeFile(t, filepath.Join(root, ".kvt", "config.yaml"), "runtime: true\n")
+
+	result, err := Commit(root, CommitOptions{
+		Message: "update a only",
+		Paths:   []string{"a.md", ".kvt/config.yaml"},
+	})
+	if err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+	if !result.Changed {
+		t.Fatalf("expected a.md commit")
+	}
+	if got := gitOutput(t, root, "show", "--pretty=format:", "--name-only", "HEAD"); got != "a.md\n" {
+		t.Fatalf("head files = %q", got)
+	}
+	if got := gitOutput(t, root, "ls-files", "--cached", "--", ".kvt/config.yaml"); got != "" {
+		t.Fatalf("runtime config tracked = %q", got)
+	}
+}
+
 func TestLogReturnsTerseEntries(t *testing.T) {
 	root := initRepoWithCommit(t)
 

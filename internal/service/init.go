@@ -57,6 +57,17 @@ func Init(ctx context.Context, req InitRequest) (result InitResult, err error) {
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		return InitResult{}, err
 	}
+	lock, err := AcquireVaultLock(root)
+	if err != nil {
+		return InitResult{}, err
+	}
+	defer func() {
+		releaseErr := lock.Release()
+		if err == nil && releaseErr != nil {
+			err = releaseErr
+		}
+	}()
+
 	hasGit, err := hasGitRepo(root)
 	if err != nil {
 		return InitResult{}, err
@@ -84,17 +95,6 @@ func Init(ctx context.Context, req InitRequest) (result InitResult, err error) {
 			return InitResult{}, fmt.Errorf("vault path must be empty or an existing git repository")
 		}
 	}
-
-	lock, err := AcquireVaultLock(root)
-	if err != nil {
-		return InitResult{}, err
-	}
-	defer func() {
-		releaseErr := lock.Release()
-		if err == nil && releaseErr != nil {
-			err = releaseErr
-		}
-	}()
 
 	if hasGit {
 		if _, err := existingMarkdownPaths(root); err != nil {
