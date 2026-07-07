@@ -12,6 +12,7 @@ import (
 	"github.com/ematvey/kvt/internal/config"
 	"github.com/ematvey/kvt/internal/gitops"
 	"github.com/ematvey/kvt/internal/httpapi"
+	kvtmcp "github.com/ematvey/kvt/internal/mcp"
 	"github.com/ematvey/kvt/internal/ontology"
 	"github.com/ematvey/kvt/internal/service"
 	"github.com/ematvey/kvt/internal/version"
@@ -164,12 +165,21 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 			fmt.Fprintln(stderr, err)
 			return 1
 		}
+		handler, err := buildServeHandler(svc, cfg)
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		if err := startConfiguredMCP(context.Background(), svc, cfg, stderr); err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
 		listenAddr := *addr
 		if listenAddr == "" {
 			listenAddr = fmt.Sprintf(":%d", cfg.Server.HTTPPort)
 		}
-		fmt.Fprintf(stdout, "serving %s on %s\n", *vaultPath, listenAddr)
-		if err := http.ListenAndServe(listenAddr, httpapi.NewServer(svc, cfg)); err != nil {
+		fmt.Fprintf(stderr, "serving %s on %s\n", *vaultPath, listenAddr)
+		if err := http.ListenAndServe(listenAddr, handler); err != nil {
 			fmt.Fprintln(stderr, err)
 			return 1
 		}
@@ -187,6 +197,45 @@ func requireInitializedVault(root string) error {
 		return fmt.Errorf("vault is not initialized; run kvt init --vault %s", root)
 	}
 	return nil
+}
+
+func startConfiguredMCP(ctx context.Context, svc *service.Service, cfg config.Config, stderr io.Writer) error {
+	switch cfg.Server.MCPTransport {
+	case "", "stdio":
+		mcpServer, err := kvtmcp.NewServer(svc, cfg)
+		if err != nil {
+			return err
+		}
+		go func() {
+			if err := mcpServer.RunStdio(ctx); err != nil {
+				fmt.Fprintln(stderr, err)
+			}
+		}()
+		return nil
+	case "streamable-http":
+		return nil
+	default:
+		return fmt.Errorf("unsupported mcp_transport %q", cfg.Server.MCPTransport)
+	}
+}
+
+func buildServeHandler(svc *service.Service, cfg config.Config) (http.Handler, error) {
+	rest := httpapi.NewServer(svc, cfg)
+	switch cfg.Server.MCPTransport {
+	case "", "stdio":
+		return rest, nil
+	case "streamable-http":
+		mcpServer, err := kvtmcp.NewServer(svc, cfg)
+		if err != nil {
+			return nil, err
+		}
+		mux := http.NewServeMux()
+		mux.Handle("/", rest)
+		mux.Handle("/mcp", httpapi.WithAuth(kvtmcp.StreamableHTTPHandler(mcpServer), cfg))
+		return mux, nil
+	default:
+		return nil, fmt.Errorf("unsupported mcp_transport %q", cfg.Server.MCPTransport)
+	}
 }
 
 func printIssues(w io.Writer, label string, issues []ontology.Issue) {

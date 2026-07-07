@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"database/sql"
+	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -141,6 +143,60 @@ func TestRunServeRejectsUninitializedVault(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "kvt init") {
 		t.Fatalf("expected init guidance, stderr = %q", stderr.String())
+	}
+}
+
+func TestServeHandlerMountsStreamableMCP(t *testing.T) {
+	root := t.TempDir()
+	if _, err := service.Init(t.Context(), service.InitRequest{VaultPath: root, Defaults: true}); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	cfg := config.Default()
+	cfg.Server.MCPTransport = "streamable-http"
+	svc, err := service.New(root, cfg, service.Deps{})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	handler, err := buildServeHandler(svc, cfg)
+	if err != nil {
+		t.Fatalf("buildServeHandler: %v", err)
+	}
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, httptest.NewRequest(http.MethodGet, "/mcp", nil))
+	if res.Code == http.StatusNotFound {
+		t.Fatalf("mcp route was not mounted")
+	}
+}
+
+func TestServeHandlerProtectsStreamableMCPWithBearerAuth(t *testing.T) {
+	root := t.TempDir()
+	if _, err := service.Init(t.Context(), service.InitRequest{VaultPath: root, Defaults: true}); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	cfg := config.Default()
+	cfg.Server.MCPTransport = "streamable-http"
+	cfg.Auth.APIKeys = []string{"secret"}
+	svc, err := service.New(root, cfg, service.Deps{})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	handler, err := buildServeHandler(svc, cfg)
+	if err != nil {
+		t.Fatalf("buildServeHandler: %v", err)
+	}
+	unauthorized := httptest.NewRecorder()
+	handler.ServeHTTP(unauthorized, httptest.NewRequest(http.MethodGet, "/mcp", nil))
+	if unauthorized.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthorized status = %d body=%s", unauthorized.Code, unauthorized.Body.String())
+	}
+	authorizedReq := httptest.NewRequest(http.MethodGet, "/mcp", nil)
+	authorizedReq.Header.Set("Authorization", "Bearer secret")
+	authorized := httptest.NewRecorder()
+	handler.ServeHTTP(authorized, authorizedReq)
+	if authorized.Code == http.StatusUnauthorized || authorized.Code == http.StatusNotFound {
+		t.Fatalf("authorized status = %d body=%s", authorized.Code, authorized.Body.String())
 	}
 }
 

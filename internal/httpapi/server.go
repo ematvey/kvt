@@ -29,7 +29,7 @@ func NewServer(svc *service.Service, cfg config.Config) http.Handler {
 		mux: http.NewServeMux(),
 	}
 	server.routes()
-	return server.auth(server.mux)
+	return WithAuth(server.mux, cfg)
 }
 
 func (s *Server) routes() {
@@ -46,12 +46,12 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/push", s.handlePush)
 }
 
-func (s *Server) auth(next http.Handler) http.Handler {
-	if len(s.cfg.Auth.APIKeys) == 0 {
+func WithAuth(next http.Handler, cfg config.Config) http.Handler {
+	if len(cfg.Auth.APIKeys) == 0 {
 		return next
 	}
 	allowed := map[string]struct{}{}
-	for _, key := range s.cfg.Auth.APIKeys {
+	for _, key := range cfg.Auth.APIKeys {
 		key = strings.TrimSpace(key)
 		if key != "" {
 			allowed[key] = struct{}{}
