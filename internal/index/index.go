@@ -15,6 +15,8 @@ type Options struct {
 	EnableVector    bool
 	VectorDimension int
 	VectorModel     string
+	VectorType      string
+	VectorBaseURL   string
 }
 
 type DB struct {

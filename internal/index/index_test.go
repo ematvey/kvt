@@ -59,6 +59,39 @@ func TestApplyDocumentIndexesFTSFieldsAndLinks(t *testing.T) {
 	}
 }
 
+func TestSearchKeywordsFallsBackToLiteralForFTSSyntax(t *testing.T) {
+	db := openTempDB(t)
+	if err := db.ApplyDocument(t.Context(), IndexedDocument{
+		Path:  "systems/db.md",
+		Hash:  "h1",
+		Title: "DB",
+		Type:  "System",
+		Chunks: []Chunk{
+			{Ordinal: 0, Text: "primary database handles x y traffic"},
+		},
+	}); err != nil {
+		t.Fatalf("ApplyDocument: %v", err)
+	}
+
+	hits, err := db.SearchKeywords(t.Context(), SearchRequest{Query: `"primary database" + x`, Limit: 10})
+	if err != nil {
+		t.Fatalf("SearchKeywords: %v", err)
+	}
+	if len(hits) != 1 || hits[0].Path != "systems/db.md" {
+		t.Fatalf("hits = %#v", hits)
+	}
+}
+
+func TestFTSSearchRejectsQueryWithoutSearchableTerms(t *testing.T) {
+	db := openTempDB(t)
+	if _, err := db.SearchKeywords(t.Context(), SearchRequest{Query: "---", Limit: 10}); err == nil || !strings.Contains(err.Error(), "no searchable terms") {
+		t.Fatalf("SearchKeywords error = %v", err)
+	}
+	if _, err := db.Grep(t.Context(), GrepRequest{Query: "---", Limit: 10}); err == nil || !strings.Contains(err.Error(), "no searchable terms") {
+		t.Fatalf("Grep error = %v", err)
+	}
+}
+
 func TestSchemaUsesFTS5(t *testing.T) {
 	db := openTempDB(t)
 
@@ -135,7 +168,7 @@ func TestSearchVectorExecutesWhenSQLiteVecAvailable(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("UpsertEmbeddings: %v", err)
 	}
-	if err := db.MarkEmbeddingState(t.Context(), "systems/db.md", "ready", "", "2026-07-07T12:00:00Z"); err != nil {
+	if err := db.MarkEmbeddingState(t.Context(), "systems/db.md", "ready", "", "2026-07-07T12:00:00Z", "h1"); err != nil {
 		t.Fatalf("MarkEmbeddingState: %v", err)
 	}
 
@@ -243,7 +276,7 @@ func TestVectorProvenanceChangeClearsVectorsAndMarksPending(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("UpsertEmbeddings: %v", err)
 	}
-	if err := db.MarkEmbeddingState(t.Context(), "people/alice.md", "ready", "", "2026-07-07T12:00:00Z"); err != nil {
+	if err := db.MarkEmbeddingState(t.Context(), "people/alice.md", "ready", "", "2026-07-07T12:00:00Z", "h1"); err != nil {
 		t.Fatalf("MarkEmbeddingState: %v", err)
 	}
 
@@ -270,6 +303,37 @@ func TestVectorProvenanceChangeClearsVectorsAndMarksPending(t *testing.T) {
 	}
 }
 
+func TestVectorProvenanceIncludesProviderAndBaseURL(t *testing.T) {
+	db := openTempDB(t)
+	createFakeVectorTable(t, db)
+	db.vecAvailable = true
+	if err := db.setMeta(t.Context(), "embedder_type", "openai"); err != nil {
+		t.Fatalf("set type: %v", err)
+	}
+	if err := db.setMeta(t.Context(), "embedder_base_url", "https://old.example"); err != nil {
+		t.Fatalf("set base URL: %v", err)
+	}
+	if err := db.setMeta(t.Context(), "embedder_model", "same-model"); err != nil {
+		t.Fatalf("set model: %v", err)
+	}
+	if err := db.setMeta(t.Context(), "embedder_dimensions", "2"); err != nil {
+		t.Fatalf("set dimensions: %v", err)
+	}
+	changed, err := db.vectorProvenanceChanged(t.Context(), Options{
+		EnableVector:    true,
+		VectorDimension: 2,
+		VectorModel:     "same-model",
+		VectorType:      "ollama",
+		VectorBaseURL:   "https://new.example",
+	})
+	if err != nil {
+		t.Fatalf("vectorProvenanceChanged: %v", err)
+	}
+	if !changed {
+		t.Fatalf("expected provenance change")
+	}
+}
+
 func TestRefreshVectorProvenanceTreatsDisabledEmbeddingsAsDirty(t *testing.T) {
 	db := openTempDB(t)
 	createFakeVectorTable(t, db)
@@ -293,7 +357,7 @@ func TestRefreshVectorProvenanceTreatsDisabledEmbeddingsAsDirty(t *testing.T) {
 		t.Fatalf("ApplyDocument: %v", err)
 	}
 	insertFakeVectorRow(t, db, "people/alice.md", 0)
-	if err := db.MarkEmbeddingState(t.Context(), "people/alice.md", "disabled", "", "2026-07-07T12:00:00Z"); err != nil {
+	if err := db.MarkEmbeddingState(t.Context(), "people/alice.md", "disabled", "", "2026-07-07T12:00:00Z", "h1"); err != nil {
 		t.Fatalf("MarkEmbeddingState: %v", err)
 	}
 
@@ -442,6 +506,27 @@ func TestUpsertEmbeddingsRejectsStaleDocumentHash(t *testing.T) {
 	}
 }
 
+func TestMarkEmbeddingStateRejectsStaleDocumentHash(t *testing.T) {
+	db := openTempDB(t)
+	if err := db.ApplyDocument(t.Context(), IndexedDocument{
+		Path:      "people/alice.md",
+		Hash:      "h2",
+		Title:     "Alice",
+		Type:      "Person",
+		Timestamp: "2026-07-07T12:00:00Z",
+		Chunks: []Chunk{
+			{Ordinal: 0, Text: "new body"},
+		},
+	}); err != nil {
+		t.Fatalf("ApplyDocument: %v", err)
+	}
+
+	err := db.MarkEmbeddingState(t.Context(), "people/alice.md", "failed", "stale", "2026-07-07T12:00:00Z", "h1")
+	if !errors.Is(err, ErrStaleEmbedding) {
+		t.Fatalf("expected stale embedding error, got %v", err)
+	}
+}
+
 func TestUpsertEmbeddingsRejectsEmptyVectors(t *testing.T) {
 	db := openTempDB(t)
 	createFakeVectorTable(t, db)
@@ -492,7 +577,7 @@ func TestSummaryReportsEmbeddingStateCounts(t *testing.T) {
 			t.Fatalf("ApplyDocument(%s): %v", doc.Path, err)
 		}
 	}
-	if err := db.MarkEmbeddingState(t.Context(), "people/bob.md", "failed", "embedder down", "2026-07-07T12:00:01Z"); err != nil {
+	if err := db.MarkEmbeddingState(t.Context(), "people/bob.md", "failed", "embedder down", "2026-07-07T12:00:01Z", "h2"); err != nil {
 		t.Fatalf("MarkEmbeddingState: %v", err)
 	}
 

@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path"
@@ -102,6 +103,8 @@ func New(root string, cfg config.Config, deps Deps) (*Service, error) {
 		EnableVector:    embedder != nil,
 		VectorDimension: cfg.Embedder.Dimensions,
 		VectorModel:     cfg.Embedder.Model,
+		VectorType:      cfg.Embedder.Type,
+		VectorBaseURL:   cfg.Embedder.BaseURL,
 	})
 	if err != nil {
 		return nil, err
@@ -359,7 +362,7 @@ func (s *Service) enqueueEmbedding(doc preparedDocument) {
 	select {
 	case s.embedQueue <- job:
 	default:
-		_ = s.index.MarkEmbeddingState(context.Background(), doc.indexed.Path, "failed", "embedding queue full", doc.timestamp)
+		_ = s.index.MarkEmbeddingState(context.Background(), doc.indexed.Path, "failed", "embedding queue full", doc.timestamp, doc.hash)
 	}
 }
 
@@ -376,7 +379,7 @@ func (s *Service) enqueueIndexedEmbedding(doc index.IndexedDocument) {
 	select {
 	case s.embedQueue <- job:
 	default:
-		_ = s.index.MarkEmbeddingState(context.Background(), doc.Path, "failed", "embedding queue full", doc.Timestamp)
+		_ = s.index.MarkEmbeddingState(context.Background(), doc.Path, "failed", "embedding queue full", doc.Timestamp, doc.Hash)
 	}
 }
 
@@ -421,7 +424,7 @@ func (s *Service) runEmbeddingWorker() {
 				text = strings.TrimSpace(chunk.Text)
 			}
 			if text == "" {
-				_ = s.index.MarkEmbeddingState(context.Background(), job.path, "failed", "empty chunk text", job.timestamp)
+				_ = s.index.MarkEmbeddingState(context.Background(), job.path, "failed", "empty chunk text", job.timestamp, job.hash)
 				break
 			}
 			texts = append(texts, text)
@@ -429,17 +432,17 @@ func (s *Service) runEmbeddingWorker() {
 		}
 		if len(texts) != len(job.chunks) {
 			if len(texts) != 0 {
-				_ = s.index.MarkEmbeddingState(context.Background(), job.path, "failed", "embedding job has empty chunk text", job.timestamp)
+				_ = s.index.MarkEmbeddingState(context.Background(), job.path, "failed", "embedding job has empty chunk text", job.timestamp, job.hash)
 			}
 			continue
 		}
 		if len(texts) == 0 {
-			_ = s.index.MarkEmbeddingState(context.Background(), job.path, "failed", "embedding job has no chunks", job.timestamp)
+			_ = s.index.MarkEmbeddingState(context.Background(), job.path, "failed", "embedding job has no chunks", job.timestamp, job.hash)
 			continue
 		}
 		vectors, err := s.embedWithRetries(context.Background(), texts)
 		if err != nil {
-			_ = s.index.MarkEmbeddingState(context.Background(), job.path, "failed", err.Error(), job.timestamp)
+			_ = s.index.MarkEmbeddingState(context.Background(), job.path, "failed", err.Error(), job.timestamp, job.hash)
 			continue
 		}
 		if len(vectors) != len(texts) {
@@ -449,6 +452,7 @@ func (s *Service) runEmbeddingWorker() {
 				"failed",
 				fmt.Sprintf("embedding response count mismatch: got %d vectors for %d chunks", len(vectors), len(texts)),
 				job.timestamp,
+				job.hash,
 			)
 			continue
 		}
@@ -462,10 +466,12 @@ func (s *Service) runEmbeddingWorker() {
 			})
 		}
 		if err := s.index.UpsertEmbeddings(context.Background(), job.path, payload); err != nil {
-			_ = s.index.MarkEmbeddingState(context.Background(), job.path, "failed", err.Error(), job.timestamp)
+			if !errors.Is(err, index.ErrStaleEmbedding) {
+				_ = s.index.MarkEmbeddingState(context.Background(), job.path, "failed", err.Error(), job.timestamp, job.hash)
+			}
 			continue
 		}
-		_ = s.index.MarkEmbeddingState(context.Background(), job.path, "ready", "", job.timestamp)
+		_ = s.index.MarkEmbeddingState(context.Background(), job.path, "ready", "", job.timestamp, job.hash)
 	}
 }
 

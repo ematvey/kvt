@@ -337,7 +337,7 @@ func TestServiceStartupQueuesPendingEmbeddings(t *testing.T) {
 	if len(result.AppliedDocuments) != 1 {
 		t.Fatalf("applied documents = %#v", result.AppliedDocuments)
 	}
-	if err := h.service.index.MarkEmbeddingState(t.Context(), "notes/pending.md", "pending", "", result.AppliedDocuments[0].Timestamp); err != nil {
+	if err := h.service.index.MarkEmbeddingState(t.Context(), "notes/pending.md", "pending", "", result.AppliedDocuments[0].Timestamp, result.AppliedDocuments[0].Hash); err != nil {
 		t.Fatalf("MarkEmbeddingState: %v", err)
 	}
 

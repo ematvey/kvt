@@ -51,7 +51,7 @@ func (s *Service) Write(ctx context.Context, req WriteRequest) (WriteResponse, e
 
 	commit, err := s.commitMutation(fmt.Sprintf("Write %s", docPath.String()), req.Agent, changedPaths)
 	if err != nil {
-		_ = s.index.MarkEmbeddingState(ctx, prepared.indexed.Path, "disabled", "git commit failed", prepared.timestamp)
+		_ = s.index.MarkEmbeddingState(ctx, prepared.indexed.Path, "disabled", "git commit failed", prepared.timestamp, prepared.hash)
 		return WriteResponse{}, err
 	}
 	s.enqueueEmbedding(prepared)
@@ -132,7 +132,7 @@ func (s *Service) Edit(ctx context.Context, req EditRequest) (WriteResponse, err
 
 	commit, err := s.commitMutation(fmt.Sprintf("Edit %s", docPath.String()), req.Agent, changedPaths)
 	if err != nil {
-		_ = s.index.MarkEmbeddingState(ctx, prepared.indexed.Path, "disabled", "git commit failed", prepared.timestamp)
+		_ = s.index.MarkEmbeddingState(ctx, prepared.indexed.Path, "disabled", "git commit failed", prepared.timestamp, prepared.hash)
 		return WriteResponse{}, err
 	}
 	s.enqueueEmbedding(prepared)

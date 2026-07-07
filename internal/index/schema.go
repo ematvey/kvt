@@ -179,7 +179,16 @@ func (db *DB) refreshVectorProvenance(ctx context.Context, opts Options) error {
 	if err := db.setMeta(ctx, "embedder_model", strings.TrimSpace(opts.VectorModel)); err != nil {
 		return err
 	}
-	return db.setMeta(ctx, "embedder_dimensions", strconv.Itoa(opts.VectorDimension))
+	if err := db.setMeta(ctx, "embedder_dimensions", strconv.Itoa(opts.VectorDimension)); err != nil {
+		return err
+	}
+	if err := db.setMeta(ctx, "embedder_type", strings.TrimSpace(opts.VectorType)); err != nil {
+		return err
+	}
+	if err := db.setMeta(ctx, "embedder_base_url", strings.TrimSpace(opts.VectorBaseURL)); err != nil {
+		return err
+	}
+	return db.setMeta(ctx, "embedder_metric", "cosine")
 }
 
 func (db *DB) backfillEmbeddingRows(ctx context.Context) error {
@@ -216,22 +225,23 @@ func (db *DB) cleanupOrphanVectorRows(ctx context.Context) error {
 }
 
 func (db *DB) vectorProvenanceChanged(ctx context.Context, opts Options) (bool, error) {
-	wantModel := strings.TrimSpace(opts.VectorModel)
-	wantDimensions := strconv.Itoa(opts.VectorDimension)
-
-	gotModel, err := db.meta(ctx, "embedder_model")
-	if err != nil && err != sql.ErrNoRows {
-		return false, err
+	want := map[string]string{
+		"embedder_model":      strings.TrimSpace(opts.VectorModel),
+		"embedder_dimensions": strconv.Itoa(opts.VectorDimension),
+		"embedder_type":       strings.TrimSpace(opts.VectorType),
+		"embedder_base_url":   strings.TrimSpace(opts.VectorBaseURL),
+		"embedder_metric":     "cosine",
 	}
-	if err == sql.ErrNoRows || gotModel != wantModel {
-		return true, nil
+	for key, wantValue := range want {
+		got, err := db.meta(ctx, key)
+		if err != nil && err != sql.ErrNoRows {
+			return false, err
+		}
+		if err == sql.ErrNoRows || got != wantValue {
+			return true, nil
+		}
 	}
-
-	gotDimensions, err := db.meta(ctx, "embedder_dimensions")
-	if err != nil && err != sql.ErrNoRows {
-		return false, err
-	}
-	return err == sql.ErrNoRows || gotDimensions != wantDimensions, nil
+	return false, nil
 }
 
 func (db *DB) setMeta(ctx context.Context, key string, value string) error {

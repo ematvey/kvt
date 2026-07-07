@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"unicode"
 )
 
 var ErrVectorUnavailable = errors.New("vector search unavailable")
@@ -173,7 +174,11 @@ func (db *DB) Grep(ctx context.Context, req GrepRequest) (GrepResponse, error) {
 		FROM kb_fts
 		WHERE kb_fts MATCH ?
 	`
-	args := []any{req.Query}
+	sanitizedFTSQuery, err := ftsQuery(req.Query)
+	if err != nil {
+		return GrepResponse{}, err
+	}
+	args := []any{sanitizedFTSQuery}
 	if req.PathPrefix != "" {
 		query += " AND path LIKE ?"
 		args = append(args, req.PathPrefix+"%")
@@ -239,7 +244,11 @@ func (db *DB) SearchKeywords(ctx context.Context, req SearchRequest) ([]SearchHi
 		JOIN kb_chunks c ON c.path = f.path AND c.ordinal = CAST(f.ordinal AS INTEGER)
 		WHERE kb_fts MATCH ?
 	`
-	args := []any{req.Query}
+	sanitizedFTSQuery, err := ftsQuery(req.Query)
+	if err != nil {
+		return nil, err
+	}
+	args := []any{sanitizedFTSQuery}
 	if req.PathPrefix != "" {
 		query += " AND f.path LIKE ?"
 		args = append(args, req.PathPrefix+"%")
@@ -248,6 +257,10 @@ func (db *DB) SearchKeywords(ctx context.Context, req SearchRequest) ([]SearchHi
 	query += fmt.Sprintf(" LIMIT %d", normalizeLimit(req.Limit, 20))
 
 	rows, err := db.sql.QueryContext(ctx, query, args...)
+	if err != nil && sanitizedFTSQuery != req.Query {
+		args[0] = req.Query
+		rows, err = db.sql.QueryContext(ctx, query, args...)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -447,15 +460,16 @@ func (db *DB) PendingEmbeddingDocuments(ctx context.Context, includeFailed bool)
 	return documents, rows.Err()
 }
 
-func (db *DB) MarkEmbeddingState(ctx context.Context, docPath string, state string, lastError string, updatedAt string) error {
+func (db *DB) MarkEmbeddingState(ctx context.Context, docPath string, state string, lastError string, updatedAt string, hash string) error {
 	var currentTimestamp string
-	if err := db.sql.QueryRowContext(ctx, `SELECT timestamp FROM kb_docs WHERE path = ?`, docPath).Scan(&currentTimestamp); err != nil {
+	var currentHash string
+	if err := db.sql.QueryRowContext(ctx, `SELECT timestamp, hash FROM kb_docs WHERE path = ?`, docPath).Scan(&currentTimestamp, &currentHash); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrStaleEmbedding
 		}
 		return err
 	}
-	if currentTimestamp != updatedAt {
+	if currentTimestamp != updatedAt || (strings.TrimSpace(hash) != "" && currentHash != hash) {
 		return ErrStaleEmbedding
 	}
 	_, err := db.sql.ExecContext(ctx, `
@@ -467,6 +481,24 @@ func (db *DB) MarkEmbeddingState(ctx context.Context, docPath string, state stri
 			updated_at = excluded.updated_at
 	`, docPath, state, lastError, updatedAt)
 	return err
+}
+
+func ftsQuery(query string) (string, error) {
+	terms := strings.FieldsFunc(query, func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
+	})
+	quoted := make([]string, 0, len(terms))
+	for _, term := range terms {
+		term = strings.TrimSpace(term)
+		if term == "" {
+			continue
+		}
+		quoted = append(quoted, `"`+strings.ReplaceAll(term, `"`, `""`)+`"`)
+	}
+	if len(quoted) == 0 {
+		return "", fmt.Errorf("query has no searchable terms")
+	}
+	return strings.Join(quoted, " "), nil
 }
 
 func (db *DB) VectorAvailable() bool {
