@@ -156,6 +156,36 @@ func TestCommitWithPathsDoesNotForceAddIgnoredRuntimeState(t *testing.T) {
 	}
 }
 
+func TestCommitWithPathsNeverCommitsTrackedRuntimeState(t *testing.T) {
+	root := initRepoWithCommit(t)
+	writeFile(t, filepath.Join(root, ".kvt", "config.yaml"), "runtime: old\n")
+	runGit(t, root, "add", ".kvt/config.yaml")
+	runGit(t, root, "commit", "-m", "legacy tracked runtime state")
+	writeFile(t, filepath.Join(root, ".gitignore"), ".kvt/\n")
+	runGit(t, root, "add", ".gitignore")
+	runGit(t, root, "commit", "-m", "ignore runtime state")
+	writeFile(t, filepath.Join(root, ".kvt", "config.yaml"), "runtime: new\n")
+
+	headBefore := strings.TrimSpace(gitOutput(t, root, "rev-parse", "HEAD"))
+	result, err := Commit(root, CommitOptions{
+		Message: "should not commit tracked runtime config",
+		Paths:   []string{".kvt/config.yaml"},
+	})
+	if err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+	if result.Changed {
+		t.Fatalf("expected tracked runtime config to stay uncommitted, got %#v", result)
+	}
+	headAfter := strings.TrimSpace(gitOutput(t, root, "rev-parse", "HEAD"))
+	if headAfter != headBefore {
+		t.Fatalf("head changed from %q to %q", headBefore, headAfter)
+	}
+	if got := gitOutput(t, root, "diff", "--name-only", "HEAD", "--", ".kvt/config.yaml"); got != ".kvt/config.yaml\n" {
+		t.Fatalf("runtime config diff = %q", got)
+	}
+}
+
 func TestCommitWithPathsDoesNotBecomeUnscopedWhenAllPathsIgnored(t *testing.T) {
 	root := initRepoWithCommit(t)
 	writeFile(t, filepath.Join(root, ".gitignore"), ".kvt/\n")

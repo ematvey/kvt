@@ -306,12 +306,17 @@ func (c Client) add(paths []string) error {
 func (c Client) filterIgnored(paths []string) []string {
 	kept := make([]string, 0, len(paths))
 	for _, path := range paths {
-		if c.isIgnored(path) {
+		if isRuntimePath(path) || c.isIgnored(path) {
 			continue
 		}
 		kept = append(kept, path)
 	}
 	return kept
+}
+
+func isRuntimePath(path string) bool {
+	path = strings.TrimPrefix(strings.ReplaceAll(path, "\\", "/"), "./")
+	return path == ".kvt" || strings.HasPrefix(path, ".kvt/")
 }
 
 func (c Client) isIgnored(path string) bool {
