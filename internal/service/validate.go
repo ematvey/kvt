@@ -19,8 +19,13 @@ func (s *Service) Validate(ctx context.Context, req ValidateRequest) (ValidateRe
 	if err != nil {
 		return ValidateResponse{}, err
 	}
-	return ValidateResponse{
+	resp := ValidateResponse{
 		Errors:   report.Errors,
 		Warnings: report.Warnings,
-	}, nil
+	}
+	if req.ValidationMode.ontologyMode() == ontology.Advisory {
+		resp.Warnings = append(resp.Warnings, resp.Errors...)
+		resp.Errors = nil
+	}
+	return resp, nil
 }

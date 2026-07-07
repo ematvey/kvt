@@ -141,18 +141,25 @@ func checkBaseHash(docPath pathutil.Path, baseHash string, current conceptState,
 	}
 }
 
-func (s *Service) prepareDocument(docPath pathutil.Path, rawContent string) (preparedDocument, error) {
+func (s *Service) prepareDocument(docPath pathutil.Path, rawContent string, validationMode ValidationMode, timestampFloor time.Time) (preparedDocument, error) {
 	doc, err := frontmatter.Parse([]byte(rawContent))
 	if err != nil {
 		return preparedDocument{}, err
 	}
-	doc = frontmatter.WithTimestamp(doc, s.nextTimestamp())
+	doc = frontmatter.WithTimestamp(doc, s.nextTimestampAfter(timestampFloor))
 
 	schema, err := ontology.Load(s.root)
 	if err != nil {
 		return preparedDocument{}, err
 	}
-	validation := ontology.ValidateDocument(schema, docPath, doc, ontology.Strict)
+	mode := validationMode.ontologyMode()
+	validation := ontology.ValidateDocument(schema, docPath, doc, mode)
+	refValidation, err := s.validateDocumentRefs(schema, docPath, doc, mode)
+	if err != nil {
+		return preparedDocument{}, err
+	}
+	validation.Errors = append(validation.Errors, refValidation.Errors...)
+	validation.Warnings = append(validation.Warnings, refValidation.Warnings...)
 	if len(validation.Errors) > 0 {
 		return preparedDocument{}, &ValidationError{
 			Path:     docPath.String(),
@@ -175,11 +182,96 @@ func (s *Service) prepareDocument(docPath pathutil.Path, rawContent string) (pre
 	}, nil
 }
 
-func (s *Service) nextTimestamp() time.Time {
+func (s *Service) nextTimestampAfter(after time.Time) time.Time {
 	now := s.now().UTC()
-	if !s.lastTimestamp.IsZero() && !now.After(s.lastTimestamp) {
-		now = s.lastTimestamp.Add(time.Nanosecond)
+	floor := after.UTC()
+	if s.lastTimestamp.After(floor) {
+		floor = s.lastTimestamp
+	}
+	if !floor.IsZero() && !now.After(floor) {
+		now = floor.Add(time.Nanosecond)
 	}
 	s.lastTimestamp = now
 	return now
+}
+
+func (s *Service) validateDocumentRefs(schema ontology.Schema, docPath pathutil.Path, doc frontmatter.Document, mode ontology.Mode) (ontology.ValidationResult, error) {
+	result := ontology.ValidationResult{}
+	docType, _ := doc.Fields["type"].(string)
+	typeDef, ok := schema.Types[docType]
+	if !ok {
+		return result, nil
+	}
+	for field, def := range typeDef.Fields {
+		if def.Ref == "" {
+			continue
+		}
+		raw, ok := doc.Fields[field].(string)
+		if !ok || strings.TrimSpace(raw) == "" {
+			continue
+		}
+		target, err := pathutil.Normalize(raw)
+		if err != nil {
+			continue
+		}
+		targetDoc, err := s.refTargetDocument(docPath, doc, target)
+		if err != nil {
+			if os.IsNotExist(err) {
+				addValidationIssue(&result, mode, docPath, field, fmt.Sprintf("missing ref target %q", target.String()))
+				continue
+			}
+			return ontology.ValidationResult{}, err
+		}
+		targetType, _ := targetDoc.Fields["type"].(string)
+		if targetType != def.Ref {
+			addValidationIssue(&result, mode, docPath, field, fmt.Sprintf("ref target %q must have type %q", target.String(), def.Ref))
+		}
+	}
+	return result, nil
+}
+
+func (s *Service) refTargetDocument(docPath pathutil.Path, doc frontmatter.Document, target pathutil.Path) (frontmatter.Document, error) {
+	if target == docPath {
+		return doc, nil
+	}
+	state, err := s.readState(target)
+	if err != nil {
+		return frontmatter.Document{}, err
+	}
+	targetDoc, err := frontmatter.Parse(state.content)
+	if err != nil {
+		return frontmatter.Document{}, err
+	}
+	return targetDoc, nil
+}
+
+func addValidationIssue(result *ontology.ValidationResult, mode ontology.Mode, docPath pathutil.Path, field string, message string) {
+	issue := ontology.Issue{Path: docPath, Field: field, Message: message}
+	if mode == ontology.Advisory {
+		result.Warnings = append(result.Warnings, issue)
+		return
+	}
+	result.Errors = append(result.Errors, issue)
+}
+
+func timestampFromState(current conceptState, err error) time.Time {
+	if err != nil {
+		return time.Time{}
+	}
+	doc, err := frontmatter.Parse(current.content)
+	if err != nil {
+		return time.Time{}
+	}
+	switch value := doc.Fields["timestamp"].(type) {
+	case string:
+		timestamp, err := time.Parse(time.RFC3339Nano, value)
+		if err != nil {
+			return time.Time{}
+		}
+		return timestamp.UTC()
+	case time.Time:
+		return value.UTC()
+	default:
+		return time.Time{}
+	}
 }

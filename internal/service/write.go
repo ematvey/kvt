@@ -28,7 +28,7 @@ func (s *Service) Write(ctx context.Context, req WriteRequest) (WriteResponse, e
 		return WriteResponse{}, err
 	}
 
-	prepared, err := s.prepareDocument(docPath, req.Content)
+	prepared, err := s.prepareDocument(docPath, req.Content, req.ValidationMode, timestampFromState(current, currentErr))
 	if err != nil {
 		return WriteResponse{}, err
 	}
@@ -107,7 +107,7 @@ func (s *Service) Edit(ctx context.Context, req EditRequest) (WriteResponse, err
 	}
 	updatedContent := strings.Replace(string(current.content), req.OldString, req.NewString, replacements)
 
-	prepared, err := s.prepareDocument(docPath, updatedContent)
+	prepared, err := s.prepareDocument(docPath, updatedContent, req.ValidationMode, timestampFromState(current, nil))
 	if err != nil {
 		return WriteResponse{}, err
 	}

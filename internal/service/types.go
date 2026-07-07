@@ -21,19 +21,21 @@ type ReadResponse struct {
 }
 
 type WriteRequest struct {
-	Path     string
-	Content  string
-	BaseHash string
-	Agent    string
+	Path           string
+	Content        string
+	BaseHash       string
+	Agent          string
+	ValidationMode ValidationMode
 }
 
 type EditRequest struct {
-	Path       string
-	BaseHash   string
-	OldString  string
-	NewString  string
-	ReplaceAll bool
-	Agent      string
+	Path           string
+	BaseHash       string
+	OldString      string
+	NewString      string
+	ReplaceAll     bool
+	Agent          string
+	ValidationMode ValidationMode
 }
 
 type DeleteRequest struct {
@@ -42,7 +44,23 @@ type DeleteRequest struct {
 	Agent    string
 }
 
-type ValidateRequest struct{}
+type ValidateRequest struct {
+	ValidationMode ValidationMode
+}
+
+type ValidationMode string
+
+const (
+	ValidationModeStrict   ValidationMode = "strict"
+	ValidationModeAdvisory ValidationMode = "advisory"
+)
+
+func (m ValidationMode) ontologyMode() ontology.Mode {
+	if m == ValidationModeAdvisory {
+		return ontology.Advisory
+	}
+	return ontology.Strict
+}
 
 type CommitInfo struct {
 	Hash      string
