@@ -4,3 +4,6 @@
 
 # Ignore local vault runtime state when this repo is used as a vault during tests
 .kvt/
+
+# Ignore agent workflow scratch files
+.superpowers/
