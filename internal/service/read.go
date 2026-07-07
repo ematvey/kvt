@@ -22,10 +22,15 @@ func (s *Service) Read(ctx context.Context, req ReadRequest) (ReadResponse, erro
 	if err != nil {
 		return ReadResponse{}, err
 	}
+	backlinks, err := s.index.Backlinks(ctx, docPath.String())
+	if err != nil {
+		return ReadResponse{}, err
+	}
 	return ReadResponse{
-		Path:     docPath.String(),
-		Content:  string(state.content),
-		Hash:     state.hash,
-		Document: doc,
+		Path:      docPath.String(),
+		Content:   string(state.content),
+		Hash:      state.hash,
+		Document:  doc,
+		Backlinks: backlinks,
 	}, nil
 }

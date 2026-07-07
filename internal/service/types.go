@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/ematvey/kvt/internal/frontmatter"
+	"github.com/ematvey/kvt/internal/index"
 	"github.com/ematvey/kvt/internal/ontology"
 )
 
@@ -14,10 +15,11 @@ type ReadRequest struct {
 }
 
 type ReadResponse struct {
-	Path     string
-	Content  string
-	Hash     string
-	Document frontmatter.Document
+	Path      string
+	Content   string
+	Hash      string
+	Document  frontmatter.Document
+	Backlinks []index.Link
 }
 
 type WriteRequest struct {

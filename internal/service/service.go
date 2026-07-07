@@ -12,6 +12,7 @@ import (
 	"github.com/ematvey/kvt/internal/config"
 	"github.com/ematvey/kvt/internal/frontmatter"
 	"github.com/ematvey/kvt/internal/gitops"
+	"github.com/ematvey/kvt/internal/index"
 	"github.com/ematvey/kvt/internal/ontology"
 	"github.com/ematvey/kvt/internal/pathutil"
 )
@@ -24,6 +25,7 @@ type Service struct {
 	root          string
 	cfg           config.Config
 	git           gitops.Client
+	index         *index.DB
 	now           func() time.Time
 	writerMu      sync.Mutex
 	lastTimestamp time.Time
@@ -39,6 +41,7 @@ type preparedDocument struct {
 	document  frontmatter.Document
 	content   []byte
 	hash      string
+	indexed   index.IndexedDocument
 	timestamp string
 	warnings  []ontology.Issue
 }
@@ -52,11 +55,19 @@ func New(root string, cfg config.Config, deps Deps) (*Service, error) {
 	if now == nil {
 		now = time.Now
 	}
+	if err := os.MkdirAll(filepath.Join(root, ".kvt"), 0o755); err != nil {
+		return nil, err
+	}
+	indexDB, err := index.Open(filepath.Join(root, ".kvt", "index.db"), index.Options{})
+	if err != nil {
+		return nil, err
+	}
 	return &Service{
-		root: root,
-		cfg:  cfg,
-		git:  gitops.New(root),
-		now:  now,
+		root:  root,
+		cfg:   cfg,
+		git:   gitops.New(root),
+		index: indexDB,
+		now:   now,
 	}, nil
 }
 
@@ -172,11 +183,13 @@ func (s *Service) prepareDocument(docPath pathutil.Path, rawContent string, vali
 	if err != nil {
 		return preparedDocument{}, err
 	}
+	hash := frontmatter.Hash(rendered)
 	timestamp, _ := doc.Fields["timestamp"].(string)
 	return preparedDocument{
 		document:  doc,
 		content:   rendered,
-		hash:      frontmatter.Hash(rendered),
+		hash:      hash,
+		indexed:   index.BuildIndexedDocument(schema, docPath, doc, hash),
 		timestamp: timestamp,
 		warnings:  validation.Warnings,
 	}, nil

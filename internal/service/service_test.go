@@ -321,6 +321,34 @@ func TestDeleteRemovesConceptRegeneratesIndexesAndCommits(t *testing.T) {
 	}
 }
 
+func TestReadReturnsBacklinksFromIndex(t *testing.T) {
+	testutil.RequireGit(t)
+	h := newServiceHarness(t)
+
+	if _, err := h.service.Write(t.Context(), WriteRequest{
+		Path:    "systems/db.md",
+		Content: "---\ntype: System\ntitle: DB\ndescription: Primary\n---\n",
+		Agent:   "test-agent",
+	}); err != nil {
+		t.Fatalf("write system: %v", err)
+	}
+	if _, err := h.service.Write(t.Context(), WriteRequest{
+		Path:    "people/alice.md",
+		Content: "---\ntype: Person\ntitle: Alice\ndescription: DBA\n---\nSee [DB](../systems/db.md).\n",
+		Agent:   "test-agent",
+	}); err != nil {
+		t.Fatalf("write person: %v", err)
+	}
+
+	got, err := h.service.Read(t.Context(), ReadRequest{Path: "systems/db.md"})
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if len(got.Backlinks) != 1 || got.Backlinks[0].FromPath != "people/alice.md" {
+		t.Fatalf("backlinks = %#v", got.Backlinks)
+	}
+}
+
 type serviceHarness struct {
 	root    string
 	service *Service
