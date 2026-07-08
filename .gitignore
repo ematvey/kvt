@@ -7,5 +7,6 @@
 
 # Ignore agent workflow scratch files
 .superpowers/
+.opencode/
 
 **/*.log
