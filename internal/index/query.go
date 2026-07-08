@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"unicode"
 
 	"github.com/ematvey/kvt/internal/responsebudget"
 )
@@ -506,20 +505,36 @@ func (db *DB) MarkEmbeddingState(ctx context.Context, docPath string, state stri
 }
 
 func ftsQuery(query string) (string, error) {
-	terms := strings.FieldsFunc(query, func(r rune) bool {
-		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
-	})
-	quoted := make([]string, 0, len(terms))
-	for _, term := range terms {
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return "", fmt.Errorf("query has no searchable terms")
+	}
+
+	// Tokenize on whitespace only, preserving punctuation within terms.
+	rawTerms := strings.Fields(query)
+	terms := make([]string, 0, len(rawTerms))
+	for _, term := range rawTerms {
 		term = strings.TrimSpace(term)
 		if term == "" {
 			continue
 		}
-		quoted = append(quoted, `"`+strings.ReplaceAll(term, `"`, `""`)+`"`)
+		terms = append(terms, term)
 	}
-	if len(quoted) == 0 {
+	if len(terms) == 0 {
 		return "", fmt.Errorf("query has no searchable terms")
 	}
+
+	quoted := make([]string, 0, len(terms))
+	for _, term := range terms {
+		escaped := strings.ReplaceAll(term, `"`, `""`)
+		// If the term already has FTS5 operators/prefix syntax, don't wrap in quotes
+		if strings.HasSuffix(term, "*") || strings.ContainsAny(term, "()^") {
+			quoted = append(quoted, escaped)
+		} else {
+			quoted = append(quoted, `"`+escaped+`"`)
+		}
+	}
+
 	return strings.Join(quoted, " "), nil
 }
 

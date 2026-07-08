@@ -84,11 +84,11 @@ func TestSearchKeywordsFallsBackToLiteralForFTSSyntax(t *testing.T) {
 
 func TestFTSSearchRejectsQueryWithoutSearchableTerms(t *testing.T) {
 	db := openTempDB(t)
-	if _, err := db.SearchKeywords(t.Context(), SearchRequest{Query: "---", Limit: 10}); err == nil || !strings.Contains(err.Error(), "no searchable terms") {
-		t.Fatalf("SearchKeywords error = %v", err)
+	if _, err := db.SearchKeywords(t.Context(), SearchRequest{Query: "", Limit: 10}); err == nil {
+		t.Fatalf("expected error for empty query")
 	}
-	if _, err := db.Grep(t.Context(), GrepRequest{Query: "---", Limit: 10}); err == nil || !strings.Contains(err.Error(), "no searchable terms") {
-		t.Fatalf("Grep error = %v", err)
+	if _, err := db.Grep(t.Context(), GrepRequest{Query: "", Limit: 10}); err == nil {
+		t.Fatalf("expected error for empty query")
 	}
 }
 
@@ -791,4 +791,47 @@ func fakeVectorRowCount(t *testing.T, db *DB, docPath string) int {
 		t.Fatalf("count fake vector rows: %v", err)
 	}
 	return count
+}
+
+func TestFTSQueryPreservesHyphenatedAndUnderscoredTerms(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"vector-search", "vector-search"},
+		{"kvt_read", "kvt_read"},
+		{"C++", "C++"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			got, err := ftsQuery(tt.input)
+			if err != nil {
+				t.Fatalf("ftsQuery(%q): %v", tt.input, err)
+			}
+			if !strings.Contains(got, tt.want) {
+				t.Fatalf("ftsQuery(%q) = %q, want it to contain %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestFTSQuerySupportsPrefixWildcard(t *testing.T) {
+	got, err := ftsQuery("kvt_*")
+	if err != nil {
+		t.Fatalf("ftsQuery: %v", err)
+	}
+	if !strings.Contains(got, "kvt_") || !strings.Contains(got, "*") {
+		t.Fatalf("ftsQuery = %q, expected prefix wildcard support", got)
+	}
+}
+
+func TestFTSQueryRejectsEmptyQuery(t *testing.T) {
+	_, err := ftsQuery("")
+	if err == nil {
+		t.Fatalf("expected error for empty query")
+	}
+	_, err = ftsQuery("   ")
+	if err == nil {
+		t.Fatalf("expected error for whitespace-only query")
+	}
 }
