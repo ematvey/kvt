@@ -54,7 +54,7 @@ func (s *Service) Write(ctx context.Context, req WriteRequest) (WriteResponse, e
 		return WriteResponse{}, err
 	}
 
-	commit, err := s.commitMutation(fmt.Sprintf("Write %s", docPath.String()), req.Agent, changedPaths)
+	commit, err := s.commitMutation(fmt.Sprintf("Write %s", docPath.String()), req.AgentID, req.Summary, changedPaths)
 	if err != nil {
 		_ = s.index.MarkEmbeddingState(ctx, prepared.indexed.Path, "disabled", "git commit failed", prepared.timestamp, prepared.hash)
 		return WriteResponse{}, err
@@ -138,7 +138,7 @@ func (s *Service) Edit(ctx context.Context, req EditRequest) (WriteResponse, err
 		return WriteResponse{}, err
 	}
 
-	commit, err := s.commitMutation(fmt.Sprintf("Edit %s", docPath.String()), req.Agent, changedPaths)
+	commit, err := s.commitMutation(fmt.Sprintf("Edit %s", docPath.String()), req.AgentID, req.Summary, changedPaths)
 	if err != nil {
 		_ = s.index.MarkEmbeddingState(ctx, prepared.indexed.Path, "disabled", "git commit failed", prepared.timestamp, prepared.hash)
 		return WriteResponse{}, err
@@ -193,7 +193,7 @@ func (s *Service) Delete(ctx context.Context, req DeleteRequest) (DeleteResponse
 		return DeleteResponse{}, err
 	}
 
-	commit, err := s.commitMutation(fmt.Sprintf("Delete %s", docPath.String()), req.Agent, changedPaths)
+	commit, err := s.commitMutation(fmt.Sprintf("Delete %s", docPath.String()), req.AgentID, "", changedPaths)
 	if err != nil {
 		return DeleteResponse{}, err
 	}

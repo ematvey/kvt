@@ -213,16 +213,27 @@ func (s *Service) readState(docPath pathutil.Path) (conceptState, error) {
 	}, nil
 }
 
-func (s *Service) commitMutation(message string, agent string, paths []string) (CommitInfo, error) {
+func (s *Service) commitMutation(autoMsg string, agentID string, summary string, paths []string) (CommitInfo, error) {
+	// Commit message: use summary if provided, fall back to auto-generated message
+	message := strings.TrimSpace(summary)
+	if message == "" {
+		message = autoMsg
+	}
+	// Commit body: include agent identity
 	body := ""
-	if strings.TrimSpace(agent) != "" {
-		body = "Agent: " + strings.TrimSpace(agent)
+	if strings.TrimSpace(agentID) != "" {
+		body = "Agent: " + strings.TrimSpace(agentID)
+	}
+	// Author: use agentID as author name for attribution, fall back to configured default
+	authorName := s.cfg.Git.AuthorName
+	if strings.TrimSpace(agentID) != "" {
+		authorName = strings.TrimSpace(agentID)
 	}
 	result, err := s.git.Commit(gitops.CommitOptions{
 		Message:     message,
 		Body:        body,
 		Paths:       appendUniquePaths(nil, paths...),
-		AuthorName:  s.cfg.Git.AuthorName,
+		AuthorName:  authorName,
 		AuthorEmail: s.cfg.Git.AuthorEmail,
 	})
 	if err != nil {

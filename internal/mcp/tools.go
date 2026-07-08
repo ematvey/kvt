@@ -65,6 +65,8 @@ type writeInput struct {
 	Content        string       `json:"content" jsonschema:"complete markdown content"`
 	BaseHash       string       `json:"base_hash,omitempty" jsonschema:"current content hash for conflict detection"`
 	Agent          string       `json:"agent,omitempty" jsonschema:"agent name for commit body"`
+	AgentID        string       `json:"agent_id,omitempty" jsonschema:"agent id slug for git author"`
+	Summary        string       `json:"summary,omitempty" jsonschema:"short commit message describing the edit"`
 	ValidationMode string       `json:"validation_mode,omitempty" jsonschema:"strict or advisory"`
 	Access         *accessInput `json:"access,omitempty" jsonschema:"optional request-scoped path access policy"`
 }
@@ -76,6 +78,8 @@ type editInput struct {
 	NewString      string       `json:"new_string" jsonschema:"replacement string"`
 	ReplaceAll     bool         `json:"replace_all,omitempty" jsonschema:"replace every match instead of requiring uniqueness"`
 	Agent          string       `json:"agent,omitempty" jsonschema:"agent name for commit body"`
+	AgentID        string       `json:"agent_id,omitempty" jsonschema:"agent id slug for git author"`
+	Summary        string       `json:"summary,omitempty" jsonschema:"short commit message describing the edit"`
 	ValidationMode string       `json:"validation_mode,omitempty" jsonschema:"strict or advisory"`
 	Access         *accessInput `json:"access,omitempty" jsonschema:"optional request-scoped path access policy"`
 }
@@ -84,6 +88,7 @@ type deleteInput struct {
 	Path     string       `json:"path" jsonschema:"bundle-relative markdown path"`
 	BaseHash string       `json:"base_hash,omitempty" jsonschema:"current content hash for conflict detection"`
 	Agent    string       `json:"agent,omitempty" jsonschema:"agent name for commit body"`
+	AgentID  string       `json:"agent_id,omitempty" jsonschema:"agent id slug for git author"`
 	Access   *accessInput `json:"access,omitempty" jsonschema:"optional request-scoped path access policy"`
 }
 
@@ -359,6 +364,8 @@ func registerTools(server *Server, svc *service.Service, cfg config.Config) {
 			Content:        in.Content,
 			BaseHash:       in.BaseHash,
 			Agent:          in.Agent,
+			AgentID:        in.AgentID,
+			Summary:        in.Summary,
 			ValidationMode: validationMode(in.ValidationMode),
 			Access:         policy,
 		})
@@ -376,6 +383,8 @@ func registerTools(server *Server, svc *service.Service, cfg config.Config) {
 			NewString:      in.NewString,
 			ReplaceAll:     in.ReplaceAll,
 			Agent:          in.Agent,
+			AgentID:        in.AgentID,
+			Summary:        in.Summary,
 			ValidationMode: validationMode(in.ValidationMode),
 			Access:         policy,
 		})
@@ -386,7 +395,7 @@ func registerTools(server *Server, svc *service.Service, cfg config.Config) {
 		if err != nil {
 			return deleteOutput{}, err
 		}
-		resp, err := svc.Delete(ctx, service.DeleteRequest{Path: in.Path, BaseHash: in.BaseHash, Agent: in.Agent, Access: policy})
+		resp, err := svc.Delete(ctx, service.DeleteRequest{Path: in.Path, BaseHash: in.BaseHash, Agent: in.Agent, AgentID: in.AgentID, Access: policy})
 		return deleteOutputFrom(resp), err
 	})
 	addTool(server, "kvt_validate", "Run ontology and link validation.", func(ctx context.Context, in validateInput) (validateOutput, error) {

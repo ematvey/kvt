@@ -205,6 +205,8 @@ func (s *Server) handleConcepts(w http.ResponseWriter, r *http.Request) {
 			Content:        req.Content,
 			BaseHash:       req.BaseHash,
 			Agent:          req.Agent,
+			AgentID:        req.AgentID,
+			Summary:        req.Summary,
 			ValidationMode: validationMode(req.ValidationMode),
 			Access:         policy,
 		})
@@ -257,6 +259,8 @@ func (s *Server) handleConceptPath(w http.ResponseWriter, r *http.Request) {
 			NewString:      req.NewString,
 			ReplaceAll:     req.ReplaceAll,
 			Agent:          req.Agent,
+			AgentID:        req.AgentID,
+			Summary:        req.Summary,
 			ValidationMode: validationMode(req.ValidationMode),
 			Access:         policy,
 		})
@@ -278,6 +282,7 @@ func (s *Server) handleConceptPath(w http.ResponseWriter, r *http.Request) {
 			Path:     path,
 			BaseHash: req.BaseHash,
 			Agent:    req.Agent,
+			AgentID:  req.AgentID,
 			Access:   policy,
 		})
 		if err != nil {
@@ -403,6 +408,8 @@ type writeRequest struct {
 	Content        string         `json:"content"`
 	BaseHash       string         `json:"base_hash"`
 	Agent          string         `json:"agent"`
+	AgentID        string         `json:"agent_id"`
+	Summary        string         `json:"summary"`
 	ValidationMode string         `json:"validation_mode"`
 	Access         *accessRequest `json:"access"`
 }
@@ -413,6 +420,8 @@ type editRequest struct {
 	NewString      string         `json:"new_string"`
 	ReplaceAll     bool           `json:"replace_all"`
 	Agent          string         `json:"agent"`
+	AgentID        string         `json:"agent_id"`
+	Summary        string         `json:"summary"`
 	ValidationMode string         `json:"validation_mode"`
 	Access         *accessRequest `json:"access"`
 }
@@ -420,6 +429,7 @@ type editRequest struct {
 type deleteRequest struct {
 	BaseHash string         `json:"base_hash"`
 	Agent    string         `json:"agent"`
+	AgentID  string         `json:"agent_id"`
 	Access   *accessRequest `json:"access"`
 }
 

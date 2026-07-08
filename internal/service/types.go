@@ -32,6 +32,8 @@ type WriteRequest struct {
 	Content        string
 	BaseHash       string
 	Agent          string
+	AgentID        string
+	Summary        string
 	ValidationMode ValidationMode
 	Access         *access.Policy
 }
@@ -43,6 +45,8 @@ type EditRequest struct {
 	NewString      string
 	ReplaceAll     bool
 	Agent          string
+	AgentID        string
+	Summary        string
 	ValidationMode ValidationMode
 	Access         *access.Policy
 }
@@ -51,6 +55,7 @@ type DeleteRequest struct {
 	Path     string
 	BaseHash string
 	Agent    string
+	AgentID  string
 	Access   *access.Policy
 }
 
