@@ -3,16 +3,57 @@ package service
 import (
 	"context"
 
+	"github.com/ematvey/kvt/internal/access"
 	"github.com/ematvey/kvt/internal/index"
 	searchpkg "github.com/ematvey/kvt/internal/search"
 )
 
-func (s *Service) List(ctx context.Context, req index.ListRequest) (index.ListResponse, error) {
-	return s.index.List(ctx, req)
+func (s *Service) List(ctx context.Context, req ListRequest) (index.ListResponse, error) {
+	resp, err := s.index.List(ctx, index.ListRequest{
+		Type:       req.Type,
+		PathPrefix: req.PathPrefix,
+		FieldKey:   req.FieldKey,
+		FieldValue: req.FieldValue,
+		Limit:      req.Limit,
+		Cursor:     req.Cursor,
+	})
+	if err != nil {
+		return index.ListResponse{}, err
+	}
+	if req.Access == nil {
+		return resp, nil
+	}
+	filtered := resp.Documents[:0]
+	for _, doc := range resp.Documents {
+		if access.CanRead(req.Access, doc.Path) {
+			filtered = append(filtered, doc)
+		}
+	}
+	resp.Documents = filtered
+	return resp, nil
 }
 
-func (s *Service) Grep(ctx context.Context, req index.GrepRequest) (index.GrepResponse, error) {
-	return s.index.Grep(ctx, req)
+func (s *Service) Grep(ctx context.Context, req GrepRequest) (index.GrepResponse, error) {
+	resp, err := s.index.Grep(ctx, index.GrepRequest{
+		Query:      req.Query,
+		PathPrefix: req.PathPrefix,
+		Limit:      req.Limit,
+		Cursor:     req.Cursor,
+	})
+	if err != nil {
+		return index.GrepResponse{}, err
+	}
+	if req.Access == nil {
+		return resp, nil
+	}
+	filtered := resp.Matches[:0]
+	for _, match := range resp.Matches {
+		if access.CanRead(req.Access, match.Path) {
+			filtered = append(filtered, match)
+		}
+	}
+	resp.Matches = filtered
+	return resp, nil
 }
 
 func (s *Service) Summary(ctx context.Context, req index.SummaryRequest) (index.SummaryResponse, error) {
@@ -81,6 +122,9 @@ func (s *Service) Search(ctx context.Context, req SearchRequest) (SearchResponse
 		Degraded: append([]string(nil), result.Degraded...),
 	}
 	for _, hit := range result.Hits {
+		if !access.CanRead(req.Access, hit.DocPath) {
+			continue
+		}
 		resp.Hits = append(resp.Hits, SearchHit{
 			Path:    hit.DocPath,
 			Title:   hit.Title,

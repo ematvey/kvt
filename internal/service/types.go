@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/ematvey/kvt/internal/access"
 	"github.com/ematvey/kvt/internal/frontmatter"
 	"github.com/ematvey/kvt/internal/index"
 	"github.com/ematvey/kvt/internal/ontology"
@@ -14,6 +15,7 @@ type ReadRequest struct {
 	Path      string
 	StartLine int
 	EndLine   int
+	Access    *access.Policy
 }
 
 type ReadResponse struct {
@@ -31,6 +33,7 @@ type WriteRequest struct {
 	BaseHash       string
 	Agent          string
 	ValidationMode ValidationMode
+	Access         *access.Policy
 }
 
 type EditRequest struct {
@@ -41,12 +44,14 @@ type EditRequest struct {
 	ReplaceAll     bool
 	Agent          string
 	ValidationMode ValidationMode
+	Access         *access.Policy
 }
 
 type DeleteRequest struct {
 	Path     string
 	BaseHash string
 	Agent    string
+	Access   *access.Policy
 }
 
 type ValidateRequest struct {
@@ -113,6 +118,25 @@ type SearchRequest struct {
 	Query      string
 	PathPrefix string
 	Limit      int
+	Access     *access.Policy
+}
+
+type ListRequest struct {
+	Type       string
+	PathPrefix string
+	FieldKey   string
+	FieldValue string
+	Limit      int
+	Cursor     string
+	Access     *access.Policy
+}
+
+type GrepRequest struct {
+	Query      string
+	PathPrefix string
+	Limit      int
+	Cursor     string
+	Access     *access.Policy
 }
 
 type SearchHit struct {

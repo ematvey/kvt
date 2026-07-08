@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/ematvey/kvt/internal/access"
 	"github.com/ematvey/kvt/internal/frontmatter"
 	"github.com/ematvey/kvt/internal/ontology"
 )
@@ -15,6 +16,9 @@ func (s *Service) Read(ctx context.Context, req ReadRequest) (ReadResponse, erro
 	}
 	docPath, err := normalizeConceptPath(req.Path)
 	if err != nil {
+		return ReadResponse{}, err
+	}
+	if err := access.CheckRead(req.Access, docPath.String()); err != nil {
 		return ReadResponse{}, err
 	}
 	state, err := s.readState(docPath)
@@ -28,6 +32,15 @@ func (s *Service) Read(ctx context.Context, req ReadRequest) (ReadResponse, erro
 	backlinks, err := s.index.Backlinks(ctx, docPath.String())
 	if err != nil {
 		return ReadResponse{}, err
+	}
+	if req.Access != nil {
+		filtered := backlinks[:0]
+		for _, link := range backlinks {
+			if access.CanRead(req.Access, link.FromPath) {
+				filtered = append(filtered, link)
+			}
+		}
+		backlinks = filtered
 	}
 	schema, err := ontology.Load(s.root)
 	if err != nil {

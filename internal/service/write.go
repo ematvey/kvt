@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/ematvey/kvt/internal/access"
 )
 
 func (s *Service) Write(ctx context.Context, req WriteRequest) (WriteResponse, error) {
@@ -14,6 +16,9 @@ func (s *Service) Write(ctx context.Context, req WriteRequest) (WriteResponse, e
 	}
 	docPath, err := normalizeConceptPath(req.Path)
 	if err != nil {
+		return WriteResponse{}, err
+	}
+	if err := access.CheckWrite(req.Access, docPath.String()); err != nil {
 		return WriteResponse{}, err
 	}
 
@@ -74,6 +79,9 @@ func (s *Service) Edit(ctx context.Context, req EditRequest) (WriteResponse, err
 	}
 	docPath, err := normalizeConceptPath(req.Path)
 	if err != nil {
+		return WriteResponse{}, err
+	}
+	if err := access.CheckWrite(req.Access, docPath.String()); err != nil {
 		return WriteResponse{}, err
 	}
 	if req.OldString == "" {
@@ -155,6 +163,9 @@ func (s *Service) Delete(ctx context.Context, req DeleteRequest) (DeleteResponse
 	}
 	docPath, err := normalizeConceptPath(req.Path)
 	if err != nil {
+		return DeleteResponse{}, err
+	}
+	if err := access.CheckWrite(req.Access, docPath.String()); err != nil {
 		return DeleteResponse{}, err
 	}
 

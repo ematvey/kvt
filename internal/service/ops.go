@@ -2,8 +2,10 @@ package service
 
 import (
 	"context"
+	"fmt"
 	"sort"
 
+	"github.com/ematvey/kvt/internal/access"
 	"github.com/ematvey/kvt/internal/gitops"
 	"github.com/ematvey/kvt/internal/index"
 	"github.com/ematvey/kvt/internal/ontology"
@@ -19,12 +21,14 @@ type HealthResponse struct {
 type LogRequest struct {
 	Cursor string
 	Limit  int
+	Access *access.Policy
 }
 
 type HistoryRequest struct {
 	Path   string
 	Cursor string
 	Limit  int
+	Access *access.Policy
 }
 
 type TypeInfo struct {
@@ -63,6 +67,9 @@ func (s *Service) Log(ctx context.Context, req LogRequest) (gitops.LogPage, erro
 	if err := ctx.Err(); err != nil {
 		return gitops.LogPage{}, err
 	}
+	if !access.LogAllowed(req.Access) {
+		return gitops.LogPage{}, fmt.Errorf("%w: log requires unrestricted read access", access.ErrDenied)
+	}
 	return s.git.Log(req.Cursor, req.Limit)
 }
 
@@ -72,6 +79,9 @@ func (s *Service) History(ctx context.Context, req HistoryRequest) (gitops.Histo
 	}
 	docPath, err := normalizeConceptPath(req.Path)
 	if err != nil {
+		return gitops.HistoryPage{}, err
+	}
+	if err := access.CheckRead(req.Access, docPath.String()); err != nil {
 		return gitops.HistoryPage{}, err
 	}
 	return s.git.History(docPath.String(), req.Cursor, req.Limit)

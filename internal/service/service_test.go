@@ -12,6 +12,7 @@ import (
 	"time"
 	"unsafe"
 
+	"github.com/ematvey/kvt/internal/access"
 	"github.com/ematvey/kvt/internal/config"
 	"github.com/ematvey/kvt/internal/index"
 	"github.com/ematvey/kvt/internal/testutil"
@@ -768,6 +769,128 @@ func TestBacklinksSurviveTargetDeleteAndRecreate(t *testing.T) {
 	}
 	if len(got.Backlinks) != 1 || got.Backlinks[0].FromPath != "people/alice.md" {
 		t.Fatalf("backlinks after recreate = %#v", got.Backlinks)
+	}
+}
+
+func TestAccessPolicyRestrictsReadAndMutations(t *testing.T) {
+	testutil.RequireGit(t)
+	h := newServiceHarness(t)
+	writePolicy, err := access.New(nil, []string{"drafts/**"}, nil)
+	if err != nil {
+		t.Fatalf("access.New write: %v", err)
+	}
+	readPolicy, err := access.New([]string{"drafts/**"}, nil, nil)
+	if err != nil {
+		t.Fatalf("access.New read: %v", err)
+	}
+
+	if _, err := h.service.Write(t.Context(), WriteRequest{
+		Path:    "notes/a.md",
+		Content: "---\ntype: Note\ntitle: A\n---\nA\n",
+		Access:  writePolicy,
+	}); !access.IsDenied(err) {
+		t.Fatalf("write outside policy err = %v", err)
+	}
+	written, err := h.service.Write(t.Context(), WriteRequest{
+		Path:    "drafts/a.md",
+		Content: "---\ntype: Note\ntitle: A\n---\nA\n",
+		Access:  writePolicy,
+	})
+	if err != nil {
+		t.Fatalf("write allowed: %v", err)
+	}
+	if _, err := h.service.Read(t.Context(), ReadRequest{Path: written.Path, Access: readPolicy}); err != nil {
+		t.Fatalf("read allowed: %v", err)
+	}
+	deniedRead, err := access.New([]string{"notes/**"}, nil, nil)
+	if err != nil {
+		t.Fatalf("access.New denied read: %v", err)
+	}
+	if _, err := h.service.Read(t.Context(), ReadRequest{Path: written.Path, Access: deniedRead}); !access.IsDenied(err) {
+		t.Fatalf("read outside policy err = %v", err)
+	}
+	deniedWrite, err := access.New(nil, []string{"notes/**"}, nil)
+	if err != nil {
+		t.Fatalf("access.New denied write: %v", err)
+	}
+	if _, err := h.service.Edit(t.Context(), EditRequest{
+		Path:      written.Path,
+		OldString: "A",
+		NewString: "B",
+		Access:    deniedWrite,
+	}); !access.IsDenied(err) {
+		t.Fatalf("edit outside policy err = %v", err)
+	}
+	if _, err := h.service.Delete(t.Context(), DeleteRequest{
+		Path:   written.Path,
+		Access: deniedWrite,
+	}); !access.IsDenied(err) {
+		t.Fatalf("delete outside policy err = %v", err)
+	}
+}
+
+func TestAccessPolicyFiltersDiscoveryToolsAndHistory(t *testing.T) {
+	testutil.RequireGit(t)
+	h := newServiceHarness(t)
+	for _, item := range []struct {
+		path  string
+		title string
+		body  string
+	}{
+		{"public/a.md", "Public", "shared needle\n"},
+		{"private/a.md", "Private", "shared needle [Public](../public/a.md)\n"},
+	} {
+		if _, err := h.service.Write(t.Context(), WriteRequest{
+			Path:    item.path,
+			Content: "---\ntype: Note\ntitle: " + item.title + "\n---\n" + item.body,
+		}); err != nil {
+			t.Fatalf("Write %s: %v", item.path, err)
+		}
+	}
+	policy, err := access.New([]string{"public/**"}, nil, nil)
+	if err != nil {
+		t.Fatalf("access.New: %v", err)
+	}
+	list, err := h.service.List(t.Context(), ListRequest{Access: policy})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(list.Documents) != 1 || list.Documents[0].Path != "public/a.md" {
+		t.Fatalf("list = %#v", list.Documents)
+	}
+	grep, err := h.service.Grep(t.Context(), GrepRequest{Query: "needle", Access: policy})
+	if err != nil {
+		t.Fatalf("Grep: %v", err)
+	}
+	if len(grep.Matches) != 1 || grep.Matches[0].Path != "public/a.md" {
+		t.Fatalf("grep = %#v", grep.Matches)
+	}
+	search, err := h.service.Search(t.Context(), SearchRequest{Query: "needle", Access: policy})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(search.Hits) != 1 || search.Hits[0].Path != "public/a.md" {
+		t.Fatalf("search = %#v", search.Hits)
+	}
+	read, err := h.service.Read(t.Context(), ReadRequest{Path: "public/a.md", Access: policy})
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if len(read.Backlinks) != 0 {
+		t.Fatalf("restricted read leaked backlinks = %#v", read.Backlinks)
+	}
+	if _, err := h.service.History(t.Context(), HistoryRequest{Path: "private/a.md", Access: policy}); !access.IsDenied(err) {
+		t.Fatalf("history outside policy err = %v", err)
+	}
+	if _, err := h.service.Log(t.Context(), LogRequest{Access: policy}); !access.IsDenied(err) {
+		t.Fatalf("restricted log err = %v", err)
+	}
+	unrestricted, err := access.New([]string{"**"}, nil, nil)
+	if err != nil {
+		t.Fatalf("access.New unrestricted: %v", err)
+	}
+	if _, err := h.service.Log(t.Context(), LogRequest{Access: unrestricted, Limit: 1}); err != nil {
+		t.Fatalf("unrestricted log: %v", err)
 	}
 }
 
