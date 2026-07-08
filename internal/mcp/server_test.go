@@ -238,11 +238,12 @@ func TestMCPRequestAccessFiltersDiscoveryAndRejectsLog(t *testing.T) {
 	if !historyDenied.IsError {
 		t.Fatalf("history denied = %#v", historyDenied)
 	}
-	logDenied := callToolResult(t, session, "kvt_log", map[string]any{
+	logResult := callToolResult(t, session, "kvt_log", map[string]any{
 		"access": accessArg,
+		"limit":  10,
 	})
-	if !logDenied.IsError {
-		t.Fatalf("log denied = %#v", logDenied)
+	if logResult.IsError {
+		t.Fatalf("log error = %#v", logResult)
 	}
 	badGlob := callToolResult(t, session, "kvt_read", map[string]any{
 		"path":   "public/a.md",

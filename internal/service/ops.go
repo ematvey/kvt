@@ -2,7 +2,6 @@ package service
 
 import (
 	"context"
-	"fmt"
 	"sort"
 
 	"github.com/ematvey/kvt/internal/access"
@@ -67,10 +66,25 @@ func (s *Service) Log(ctx context.Context, req LogRequest) (gitops.LogPage, erro
 	if err := ctx.Err(); err != nil {
 		return gitops.LogPage{}, err
 	}
-	if !access.LogAllowed(req.Access) {
-		return gitops.LogPage{}, fmt.Errorf("%w: log requires unrestricted read access", access.ErrDenied)
+	page, err := s.git.Log(req.Cursor, req.Limit)
+	if err != nil {
+		return gitops.LogPage{}, err
 	}
-	return s.git.Log(req.Cursor, req.Limit)
+	if req.Access == nil || access.LogAllowed(req.Access) {
+		return page, nil
+	}
+
+	// Filter unauthorized file paths from each entry
+	filtered := make([]gitops.LogEntry, 0, len(page.Entries))
+	for _, entry := range page.Entries {
+		entry.Files = access.FilterStrings(entry.Files, req.Access, access.Read)
+		if len(entry.Files) == 0 {
+			entry.FileSummary = ""
+		}
+		filtered = append(filtered, entry)
+	}
+	page.Entries = filtered
+	return page, nil
 }
 
 func (s *Service) History(ctx context.Context, req HistoryRequest) (gitops.HistoryPage, error) {

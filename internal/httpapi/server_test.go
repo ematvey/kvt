@@ -358,9 +358,9 @@ func TestRESTRequestAccessFiltersDiscoveryAndRejectsInvalidGlob(t *testing.T) {
 	if bad.Code != http.StatusBadRequest {
 		t.Fatalf("bad glob status = %d body=%s", bad.Code, bad.Body.String())
 	}
-	logDenied := doJSON(t, handler, http.MethodGet, "/log?read_glob=public/**", nil, "")
-	if logDenied.Code != http.StatusForbidden {
-		t.Fatalf("log denied status = %d body=%s", logDenied.Code, logDenied.Body.String())
+	logAllowed := doJSON(t, handler, http.MethodGet, "/log?read_glob=public/**", nil, "")
+	if logAllowed.Code != http.StatusOK {
+		t.Fatalf("log status = %d body=%s", logAllowed.Code, logAllowed.Body.String())
 	}
 }
 

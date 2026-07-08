@@ -882,7 +882,7 @@ func TestAccessPolicyFiltersDiscoveryToolsAndHistory(t *testing.T) {
 	if _, err := h.service.History(t.Context(), HistoryRequest{Path: "private/a.md", Access: policy}); !access.IsDenied(err) {
 		t.Fatalf("history outside policy err = %v", err)
 	}
-	if _, err := h.service.Log(t.Context(), LogRequest{Access: policy}); !access.IsDenied(err) {
+	if _, err := h.service.Log(t.Context(), LogRequest{Access: policy, Limit: 10}); err != nil {
 		t.Fatalf("restricted log err = %v", err)
 	}
 	unrestricted, err := access.New([]string{"**"}, nil, nil)
@@ -973,6 +973,47 @@ func openTempDBForServiceTest(t *testing.T) *index.DB {
 	})
 	forceVectorAvailableForTest(t, db)
 	return db
+}
+
+func TestLogFiltersPathsByAccessPolicy(t *testing.T) {
+	testutil.RequireGit(t)
+	h := newServiceHarness(t)
+
+	if _, err := h.service.Write(t.Context(), WriteRequest{
+		Path:    "public/doc.md",
+		Content: "---\ntype: Note\ntitle: Public\n---\nPublic\n",
+	}); err != nil {
+		t.Fatalf("Write public: %v", err)
+	}
+	if _, err := h.service.Write(t.Context(), WriteRequest{
+		Path:    "private/doc.md",
+		Content: "---\ntype: Note\ntitle: Private\n---\nPrivate\n",
+	}); err != nil {
+		t.Fatalf("Write private: %v", err)
+	}
+
+	policy, err := access.New([]string{"public/**"}, nil, nil)
+	if err != nil {
+		t.Fatalf("access.New: %v", err)
+	}
+
+	// Filtered log should include both commits but show only
+	// public/ paths in the Files field
+	log, err := h.service.Log(t.Context(), LogRequest{Access: policy, Limit: 10})
+	if err != nil {
+		t.Fatalf("Log: %v", err)
+	}
+	if len(log.Entries) == 0 {
+		t.Fatalf("expected log entries")
+	}
+	for _, entry := range log.Entries {
+		for _, file := range entry.Files {
+			if access.CanRead(policy, file) {
+				continue
+			}
+			t.Fatalf("entry %s contains unauthorized file %q", entry.ShortHash, file)
+		}
+	}
 }
 
 func TestServiceCloseCleansUpGoroutines(t *testing.T) {
