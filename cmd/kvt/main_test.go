@@ -13,7 +13,6 @@ import (
 	"testing"
 
 	"github.com/ematvey/kvt/internal/config"
-	"github.com/ematvey/kvt/internal/index"
 	"github.com/ematvey/kvt/internal/service"
 	"github.com/ematvey/kvt/internal/testutil"
 )
@@ -119,14 +118,14 @@ func TestRunReindexRebuildsDerivedIndex(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	list, err := svc.List(t.Context(), index.ListRequest{Type: "System"})
+	list, err := svc.List(t.Context(), service.ListRequest{Type: "System"})
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
 	if len(list.Documents) != 1 || list.Documents[0].Path != "systems/db.md" {
 		t.Fatalf("documents = %#v", list.Documents)
 	}
-	grep, err := svc.Grep(t.Context(), index.GrepRequest{Query: "Primary", Limit: 10})
+	grep, err := svc.Grep(t.Context(), service.GrepRequest{Query: "Primary", Limit: 10})
 	if err != nil {
 		t.Fatalf("Grep: %v", err)
 	}
