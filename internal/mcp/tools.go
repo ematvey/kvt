@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 
+	"github.com/ematvey/kvt/internal/access"
 	"github.com/ematvey/kvt/internal/config"
 	"github.com/ematvey/kvt/internal/gitops"
 	"github.com/ematvey/kvt/internal/index"
@@ -15,61 +16,75 @@ import (
 
 type emptyInput struct{}
 
+type accessInput struct {
+	ReadGlobs  []string `json:"read_globs,omitempty" jsonschema:"read allow glob patterns"`
+	WriteGlobs []string `json:"write_globs,omitempty" jsonschema:"write allow glob patterns"`
+	DenyGlobs  []string `json:"deny_globs,omitempty" jsonschema:"deny glob patterns"`
+}
+
 type searchInput struct {
-	Query      string `json:"query" jsonschema:"search query"`
-	PathPrefix string `json:"path_prefix,omitempty" jsonschema:"optional bundle-relative path prefix"`
-	Limit      int    `json:"limit,omitempty" jsonschema:"maximum number of results"`
-	Cursor     string `json:"cursor,omitempty" jsonschema:"pagination cursor for grep results"`
+	Query      string       `json:"query" jsonschema:"search query"`
+	PathPrefix string       `json:"path_prefix,omitempty" jsonschema:"optional bundle-relative path prefix"`
+	Limit      int          `json:"limit,omitempty" jsonschema:"maximum number of results"`
+	Cursor     string       `json:"cursor,omitempty" jsonschema:"pagination cursor for grep results"`
+	Access     *accessInput `json:"access,omitempty" jsonschema:"optional request-scoped path access policy"`
 }
 
 type listInput struct {
-	Type       string `json:"type,omitempty" jsonschema:"optional concept type filter"`
-	PathPrefix string `json:"path_prefix,omitempty" jsonschema:"optional bundle-relative path prefix"`
-	FieldKey   string `json:"field_key,omitempty" jsonschema:"optional frontmatter field key filter"`
-	FieldValue string `json:"field_value,omitempty" jsonschema:"optional frontmatter field value filter"`
-	Limit      int    `json:"limit,omitempty" jsonschema:"maximum number of documents"`
-	Cursor     string `json:"cursor,omitempty" jsonschema:"pagination cursor"`
+	Type       string       `json:"type,omitempty" jsonschema:"optional concept type filter"`
+	PathPrefix string       `json:"path_prefix,omitempty" jsonschema:"optional bundle-relative path prefix"`
+	FieldKey   string       `json:"field_key,omitempty" jsonschema:"optional frontmatter field key filter"`
+	FieldValue string       `json:"field_value,omitempty" jsonschema:"optional frontmatter field value filter"`
+	Limit      int          `json:"limit,omitempty" jsonschema:"maximum number of documents"`
+	Cursor     string       `json:"cursor,omitempty" jsonschema:"pagination cursor"`
+	Access     *accessInput `json:"access,omitempty" jsonschema:"optional request-scoped path access policy"`
 }
 
 type pathInput struct {
-	Path      string `json:"path" jsonschema:"bundle-relative markdown path"`
-	StartLine int    `json:"start_line,omitempty" jsonschema:"1-based inclusive first line to read"`
-	EndLine   int    `json:"end_line,omitempty" jsonschema:"1-based inclusive last line to read"`
+	Path      string       `json:"path" jsonschema:"bundle-relative markdown path"`
+	StartLine int          `json:"start_line,omitempty" jsonschema:"1-based inclusive first line to read"`
+	EndLine   int          `json:"end_line,omitempty" jsonschema:"1-based inclusive last line to read"`
+	Access    *accessInput `json:"access,omitempty" jsonschema:"optional request-scoped path access policy"`
 }
 
 type pageInput struct {
-	Cursor string `json:"cursor,omitempty" jsonschema:"pagination cursor"`
-	Limit  int    `json:"limit,omitempty" jsonschema:"page size"`
+	Cursor string       `json:"cursor,omitempty" jsonschema:"pagination cursor"`
+	Limit  int          `json:"limit,omitempty" jsonschema:"page size"`
+	Access *accessInput `json:"access,omitempty" jsonschema:"optional request-scoped path access policy"`
 }
 
 type historyInput struct {
-	Path   string `json:"path" jsonschema:"bundle-relative markdown path"`
-	Cursor string `json:"cursor,omitempty" jsonschema:"pagination cursor"`
-	Limit  int    `json:"limit,omitempty" jsonschema:"page size"`
+	Path   string       `json:"path" jsonschema:"bundle-relative markdown path"`
+	Cursor string       `json:"cursor,omitempty" jsonschema:"pagination cursor"`
+	Limit  int          `json:"limit,omitempty" jsonschema:"page size"`
+	Access *accessInput `json:"access,omitempty" jsonschema:"optional request-scoped path access policy"`
 }
 
 type writeInput struct {
-	Path           string `json:"path" jsonschema:"bundle-relative markdown path"`
-	Content        string `json:"content" jsonschema:"complete markdown content"`
-	BaseHash       string `json:"base_hash,omitempty" jsonschema:"current content hash for conflict detection"`
-	Agent          string `json:"agent,omitempty" jsonschema:"agent name for commit body"`
-	ValidationMode string `json:"validation_mode,omitempty" jsonschema:"strict or advisory"`
+	Path           string       `json:"path" jsonschema:"bundle-relative markdown path"`
+	Content        string       `json:"content" jsonschema:"complete markdown content"`
+	BaseHash       string       `json:"base_hash,omitempty" jsonschema:"current content hash for conflict detection"`
+	Agent          string       `json:"agent,omitempty" jsonschema:"agent name for commit body"`
+	ValidationMode string       `json:"validation_mode,omitempty" jsonschema:"strict or advisory"`
+	Access         *accessInput `json:"access,omitempty" jsonschema:"optional request-scoped path access policy"`
 }
 
 type editInput struct {
-	Path           string `json:"path" jsonschema:"bundle-relative markdown path"`
-	BaseHash       string `json:"base_hash,omitempty" jsonschema:"current content hash for conflict detection"`
-	OldString      string `json:"old_string" jsonschema:"exact string to replace"`
-	NewString      string `json:"new_string" jsonschema:"replacement string"`
-	ReplaceAll     bool   `json:"replace_all,omitempty" jsonschema:"replace every match instead of requiring uniqueness"`
-	Agent          string `json:"agent,omitempty" jsonschema:"agent name for commit body"`
-	ValidationMode string `json:"validation_mode,omitempty" jsonschema:"strict or advisory"`
+	Path           string       `json:"path" jsonschema:"bundle-relative markdown path"`
+	BaseHash       string       `json:"base_hash,omitempty" jsonschema:"current content hash for conflict detection"`
+	OldString      string       `json:"old_string" jsonschema:"exact string to replace"`
+	NewString      string       `json:"new_string" jsonschema:"replacement string"`
+	ReplaceAll     bool         `json:"replace_all,omitempty" jsonschema:"replace every match instead of requiring uniqueness"`
+	Agent          string       `json:"agent,omitempty" jsonschema:"agent name for commit body"`
+	ValidationMode string       `json:"validation_mode,omitempty" jsonschema:"strict or advisory"`
+	Access         *accessInput `json:"access,omitempty" jsonschema:"optional request-scoped path access policy"`
 }
 
 type deleteInput struct {
-	Path     string `json:"path" jsonschema:"bundle-relative markdown path"`
-	BaseHash string `json:"base_hash,omitempty" jsonschema:"current content hash for conflict detection"`
-	Agent    string `json:"agent,omitempty" jsonschema:"agent name for commit body"`
+	Path     string       `json:"path" jsonschema:"bundle-relative markdown path"`
+	BaseHash string       `json:"base_hash,omitempty" jsonschema:"current content hash for conflict detection"`
+	Agent    string       `json:"agent,omitempty" jsonschema:"agent name for commit body"`
+	Access   *accessInput `json:"access,omitempty" jsonschema:"optional request-scoped path access policy"`
 }
 
 type validateInput struct {
@@ -263,24 +278,37 @@ func registerTools(server *Server, svc *service.Service, cfg config.Config) {
 		return howtoOutput{Text: text}, err
 	})
 	addTool(server, "kvt_search", "Use first for semantic or keyword discovery across the vault.", func(ctx context.Context, in searchInput) (searchOutput, error) {
-		resp, err := svc.Search(ctx, service.SearchRequest{Query: in.Query, PathPrefix: in.PathPrefix, Limit: in.Limit})
+		policy, err := accessPolicyFromInput(in.Access)
+		if err != nil {
+			return searchOutput{}, err
+		}
+		resp, err := svc.Search(ctx, service.SearchRequest{Query: in.Query, PathPrefix: in.PathPrefix, Limit: in.Limit, Access: policy})
 		return searchOutputFrom(resp), err
 	})
 	addTool(server, "kvt_grep", "Use for exact content lookup when you know text that should appear.", func(ctx context.Context, in searchInput) (grepOutput, error) {
-		resp, err := svc.Grep(ctx, index.GrepRequest{Query: in.Query, PathPrefix: in.PathPrefix, Limit: in.Limit, Cursor: in.Cursor})
+		policy, err := accessPolicyFromInput(in.Access)
+		if err != nil {
+			return grepOutput{}, err
+		}
+		resp, err := svc.Grep(ctx, service.GrepRequest{Query: in.Query, PathPrefix: in.PathPrefix, Limit: in.Limit, Cursor: in.Cursor, Access: policy})
 		if err != nil {
 			return grepOutput{}, err
 		}
 		return budgetGrepOutput(in.Cursor, resp, cfg.Limits.MaxResponseChars)
 	})
 	addTool(server, "kvt_list", "List concepts by type, path prefix, or frontmatter field filters.", func(ctx context.Context, in listInput) (listOutput, error) {
-		resp, err := svc.List(ctx, index.ListRequest{
+		policy, err := accessPolicyFromInput(in.Access)
+		if err != nil {
+			return listOutput{}, err
+		}
+		resp, err := svc.List(ctx, service.ListRequest{
 			Type:       in.Type,
 			PathPrefix: in.PathPrefix,
 			FieldKey:   in.FieldKey,
 			FieldValue: in.FieldValue,
 			Limit:      in.Limit,
 			Cursor:     in.Cursor,
+			Access:     policy,
 		})
 		if err != nil {
 			return listOutput{}, err
@@ -288,7 +316,11 @@ func registerTools(server *Server, svc *service.Service, cfg config.Config) {
 		return budgetListOutput(in.Cursor, resp, cfg.Limits.MaxResponseChars)
 	})
 	addTool(server, "kvt_read", "Read one concept and return current content, hash, and backlinks.", func(ctx context.Context, in pathInput) (readOutput, error) {
-		resp, err := svc.Read(ctx, service.ReadRequest{Path: in.Path, StartLine: in.StartLine, EndLine: in.EndLine})
+		policy, err := accessPolicyFromInput(in.Access)
+		if err != nil {
+			return readOutput{}, err
+		}
+		resp, err := svc.Read(ctx, service.ReadRequest{Path: in.Path, StartLine: in.StartLine, EndLine: in.EndLine, Access: policy})
 		return readOutputFrom(resp), err
 	})
 	addTool(server, "kvt_types", "List ontology types and field constraints.", func(ctx context.Context, _ emptyInput) (typesOutput, error) {
@@ -296,30 +328,47 @@ func registerTools(server *Server, svc *service.Service, cfg config.Config) {
 		return typesOutputFrom(resp), err
 	})
 	addTool(server, "kvt_log", "Return paginated git commit history for the vault.", func(ctx context.Context, in pageInput) (logOutput, error) {
-		resp, err := svc.Log(ctx, service.LogRequest{Cursor: in.Cursor, Limit: in.Limit})
+		policy, err := accessPolicyFromInput(in.Access)
+		if err != nil {
+			return logOutput{}, err
+		}
+		resp, err := svc.Log(ctx, service.LogRequest{Cursor: in.Cursor, Limit: in.Limit, Access: policy})
 		if err != nil {
 			return logOutput{}, err
 		}
 		return budgetLogOutput(in.Cursor, resp, cfg.Limits.MaxResponseChars)
 	})
 	addTool(server, "kvt_history", "Return paginated commit history and diffs for one concept.", func(ctx context.Context, in historyInput) (historyOutput, error) {
-		resp, err := svc.History(ctx, service.HistoryRequest{Path: in.Path, Cursor: in.Cursor, Limit: in.Limit})
+		policy, err := accessPolicyFromInput(in.Access)
+		if err != nil {
+			return historyOutput{}, err
+		}
+		resp, err := svc.History(ctx, service.HistoryRequest{Path: in.Path, Cursor: in.Cursor, Limit: in.Limit, Access: policy})
 		if err != nil {
 			return historyOutput{}, err
 		}
 		return budgetHistoryOutput(in.Cursor, resp, cfg.Limits.MaxResponseChars)
 	})
 	addTool(server, "kvt_write", "Write complete concept content; use base_hash when updating an existing concept.", func(ctx context.Context, in writeInput) (writeOutput, error) {
+		policy, err := accessPolicyFromInput(in.Access)
+		if err != nil {
+			return writeOutput{}, err
+		}
 		resp, err := svc.Write(ctx, service.WriteRequest{
 			Path:           in.Path,
 			Content:        in.Content,
 			BaseHash:       in.BaseHash,
 			Agent:          in.Agent,
 			ValidationMode: validationMode(in.ValidationMode),
+			Access:         policy,
 		})
 		return writeOutputFrom(resp), err
 	})
 	addTool(server, "kvt_edit", "Edit a concept by exact string replacement; read first and pass base_hash.", func(ctx context.Context, in editInput) (writeOutput, error) {
+		policy, err := accessPolicyFromInput(in.Access)
+		if err != nil {
+			return writeOutput{}, err
+		}
 		resp, err := svc.Edit(ctx, service.EditRequest{
 			Path:           in.Path,
 			BaseHash:       in.BaseHash,
@@ -328,11 +377,16 @@ func registerTools(server *Server, svc *service.Service, cfg config.Config) {
 			ReplaceAll:     in.ReplaceAll,
 			Agent:          in.Agent,
 			ValidationMode: validationMode(in.ValidationMode),
+			Access:         policy,
 		})
 		return writeOutputFrom(resp), err
 	})
 	addTool(server, "kvt_delete", "Delete a concept; pass base_hash to avoid stale deletes.", func(ctx context.Context, in deleteInput) (deleteOutput, error) {
-		resp, err := svc.Delete(ctx, service.DeleteRequest{Path: in.Path, BaseHash: in.BaseHash, Agent: in.Agent})
+		policy, err := accessPolicyFromInput(in.Access)
+		if err != nil {
+			return deleteOutput{}, err
+		}
+		resp, err := svc.Delete(ctx, service.DeleteRequest{Path: in.Path, BaseHash: in.BaseHash, Agent: in.Agent, Access: policy})
 		return deleteOutputFrom(resp), err
 	})
 	addTool(server, "kvt_validate", "Run ontology and link validation.", func(ctx context.Context, in validateInput) (validateOutput, error) {
@@ -357,6 +411,13 @@ func validationMode(raw string) service.ValidationMode {
 		return service.ValidationModeAdvisory
 	}
 	return service.ValidationModeStrict
+}
+
+func accessPolicyFromInput(in *accessInput) (*access.Policy, error) {
+	if in == nil {
+		return nil, nil
+	}
+	return access.New(in.ReadGlobs, in.WriteGlobs, in.DenyGlobs)
 }
 
 func searchOutputFrom(resp service.SearchResponse) searchOutput {

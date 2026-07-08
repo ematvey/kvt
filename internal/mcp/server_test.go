@@ -135,6 +135,124 @@ func TestMCPToolContractsUseStableJSONShapes(t *testing.T) {
 	}
 }
 
+func TestMCPRequestAccessRestrictsReadAndWrite(t *testing.T) {
+	svc := newMCPTestService(t)
+	server, err := NewServer(svc, openConfig())
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	session := connectMCPClient(t, server)
+
+	emptyAccess := callToolResult(t, session, "kvt_write", map[string]any{
+		"path":    "public/empty.md",
+		"content": "---\ntype: Note\ntitle: Empty\n---\nA\n",
+		"access":  map[string]any{},
+	})
+	if !emptyAccess.IsError {
+		t.Fatalf("empty access result = %#v", emptyAccess)
+	}
+	denied := callToolResult(t, session, "kvt_write", map[string]any{
+		"path":    "private/a.md",
+		"content": "---\ntype: Note\ntitle: A\n---\nA\n",
+		"access":  map[string]any{"write_globs": []string{"public/**"}},
+	})
+	if !denied.IsError {
+		t.Fatalf("denied write result = %#v", denied)
+	}
+	callToolMap(t, session, "kvt_write", map[string]any{
+		"path":    "public/a.md",
+		"content": "---\ntype: Note\ntitle: A\n---\nneedle\n",
+		"access":  map[string]any{"write_globs": []string{"public/**"}},
+	})
+	readDenied := callToolResult(t, session, "kvt_read", map[string]any{
+		"path":   "public/a.md",
+		"access": map[string]any{"read_globs": []string{"private/**"}},
+	})
+	if !readDenied.IsError {
+		t.Fatalf("read denied result = %#v", readDenied)
+	}
+	readAllowed := callToolMap(t, session, "kvt_read", map[string]any{
+		"path":   "public/a.md",
+		"access": map[string]any{"read_globs": []string{"public/**"}},
+	})
+	if readAllowed["path"] != "public/a.md" {
+		t.Fatalf("read allowed = %#v", readAllowed)
+	}
+	editDenied := callToolResult(t, session, "kvt_edit", map[string]any{
+		"path":       "public/a.md",
+		"old_string": "needle",
+		"new_string": "changed",
+		"access":     map[string]any{"write_globs": []string{"private/**"}},
+	})
+	if !editDenied.IsError {
+		t.Fatalf("edit denied result = %#v", editDenied)
+	}
+	deleteDenied := callToolResult(t, session, "kvt_delete", map[string]any{
+		"path":   "public/a.md",
+		"access": map[string]any{"write_globs": []string{"private/**"}},
+	})
+	if !deleteDenied.IsError {
+		t.Fatalf("delete denied result = %#v", deleteDenied)
+	}
+}
+
+func TestMCPRequestAccessFiltersDiscoveryAndRejectsLog(t *testing.T) {
+	svc := newMCPTestService(t)
+	server, err := NewServer(svc, openConfig())
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	session := connectMCPClient(t, server)
+	for _, path := range []string{"public/a.md", "private/a.md"} {
+		callToolMap(t, session, "kvt_write", map[string]any{
+			"path":    path,
+			"content": "---\ntype: Note\ntitle: A\n---\nneedle\n",
+		})
+	}
+	accessArg := map[string]any{"read_globs": []string{"public/**"}}
+	list := callToolMap(t, session, "kvt_list", map[string]any{"access": accessArg})
+	docs := list["documents"].([]any)
+	if len(docs) != 1 || docs[0].(map[string]any)["path"] != "public/a.md" {
+		t.Fatalf("docs = %#v", docs)
+	}
+	grep := callToolMap(t, session, "kvt_grep", map[string]any{
+		"query":  "needle",
+		"access": accessArg,
+	})
+	matches := grep["matches"].([]any)
+	if len(matches) != 1 || matches[0].(map[string]any)["path"] != "public/a.md" {
+		t.Fatalf("matches = %#v", matches)
+	}
+	search := callToolMap(t, session, "kvt_search", map[string]any{
+		"query":  "needle",
+		"access": accessArg,
+	})
+	hits := search["hits"].([]any)
+	if len(hits) != 1 || hits[0].(map[string]any)["path"] != "public/a.md" {
+		t.Fatalf("hits = %#v", hits)
+	}
+	historyDenied := callToolResult(t, session, "kvt_history", map[string]any{
+		"path":   "private/a.md",
+		"access": accessArg,
+	})
+	if !historyDenied.IsError {
+		t.Fatalf("history denied = %#v", historyDenied)
+	}
+	logDenied := callToolResult(t, session, "kvt_log", map[string]any{
+		"access": accessArg,
+	})
+	if !logDenied.IsError {
+		t.Fatalf("log denied = %#v", logDenied)
+	}
+	badGlob := callToolResult(t, session, "kvt_read", map[string]any{
+		"path":   "public/a.md",
+		"access": map[string]any{"read_globs": []string{"../bad/**"}},
+	})
+	if !badGlob.IsError {
+		t.Fatalf("bad glob result = %#v", badGlob)
+	}
+}
+
 func TestMCPListAndGrepExposePaginationCursor(t *testing.T) {
 	svc := newMCPTestService(t)
 	server, err := NewServer(svc, openConfig())
