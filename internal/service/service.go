@@ -127,11 +127,11 @@ func New(root string, cfg config.Config, deps Deps) (*Service, error) {
 		embeddingMaxAttempts:  embeddingMaxAttempts,
 		embeddingBackoffDelay: embeddingBackoffDelay,
 	}
+	svc.shutdownCh = make(chan struct{})
 	if embedder != nil && indexDB.VectorAvailable() {
 		svc.embedQueue = make(chan embeddingJob, 256)
 		go svc.runEmbeddingWorker()
 	}
-	svc.shutdownCh = make(chan struct{})
 	return svc, nil
 }
 
@@ -379,7 +379,9 @@ func (s *Service) enqueueEmbedding(doc preparedDocument) {
 		hash:      doc.hash,
 		chunks:    append([]index.Chunk(nil), doc.indexed.Chunks...),
 	}
-	_ = s.enqueueEmbeddingJob(job)
+	if err := s.enqueueEmbeddingJob(job); err != nil {
+		_ = s.index.MarkEmbeddingState(context.Background(), doc.indexed.Path, "pending", "queue overflow; will retry", doc.timestamp, doc.hash)
+	}
 }
 
 func (s *Service) enqueueIndexedEmbedding(doc index.IndexedDocument) {
@@ -392,7 +394,9 @@ func (s *Service) enqueueIndexedEmbedding(doc index.IndexedDocument) {
 		hash:      doc.Hash,
 		chunks:    append([]index.Chunk(nil), doc.Chunks...),
 	}
-	_ = s.enqueueEmbeddingJob(job)
+	if err := s.enqueueEmbeddingJob(job); err != nil {
+		_ = s.index.MarkEmbeddingState(context.Background(), doc.Path, "pending", "queue overflow; will retry", doc.Timestamp, doc.Hash)
+	}
 }
 
 func (s *Service) enqueuePendingEmbeddings(ctx context.Context) error {
@@ -458,7 +462,7 @@ func (s *Service) runEmbeddingWorker() {
 
 func (s *Service) enqueueEmbeddingJob(job embeddingJob) error {
 	if s.embedQueue == nil {
-		return nil
+		return fmt.Errorf("embedding not available")
 	}
 	select {
 	case s.embedQueue <- job:
