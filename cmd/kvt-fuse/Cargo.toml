@@ -1,0 +1,43 @@
+[package]
+name = "kvt-fuse"
+version = "0.1.0"
+edition = "2021"
+description = "FUSE filesystem for KVT vault — mount the knowledge base as a native filesystem"
+
+[profile.release]
+lto = true
+strip = true
+opt-level = "z"
+
+[dependencies]
+# FUSE bindings
+fuser = { version = "0.15", features = ["abi-7-31"] }
+
+# Async runtime
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "signal"] }
+
+# HTTP client
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+# Content hashing
+sha2 = "0.10"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# libc bindings (getuid, getgid, errno constants)
+libc = "0.2"
+
+# Error handling
+anyhow = "1"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Temp files
+tempfile = "3"
