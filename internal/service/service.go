@@ -128,11 +128,8 @@ func New(root string, cfg config.Config, deps Deps) (*Service, error) {
 		embeddingBackoffDelay: embeddingBackoffDelay,
 	}
 	if embedder != nil && indexDB.VectorAvailable() {
-		svc.embedQueue = make(chan embeddingJob, 64)
+		svc.embedQueue = make(chan embeddingJob, 256)
 		go svc.runEmbeddingWorker()
-		go func() {
-			_ = svc.enqueuePendingEmbeddings(context.Background())
-		}()
 	}
 	svc.shutdownCh = make(chan struct{})
 	return svc, nil
@@ -382,11 +379,7 @@ func (s *Service) enqueueEmbedding(doc preparedDocument) {
 		hash:      doc.hash,
 		chunks:    append([]index.Chunk(nil), doc.indexed.Chunks...),
 	}
-	select {
-	case s.embedQueue <- job:
-	default:
-		_ = s.index.MarkEmbeddingState(context.Background(), doc.indexed.Path, "failed", "embedding queue full", doc.timestamp, doc.hash)
-	}
+	_ = s.enqueueEmbeddingJob(job)
 }
 
 func (s *Service) enqueueIndexedEmbedding(doc index.IndexedDocument) {
@@ -399,11 +392,7 @@ func (s *Service) enqueueIndexedEmbedding(doc index.IndexedDocument) {
 		hash:      doc.Hash,
 		chunks:    append([]index.Chunk(nil), doc.Chunks...),
 	}
-	select {
-	case s.embedQueue <- job:
-	default:
-		_ = s.index.MarkEmbeddingState(context.Background(), doc.Path, "failed", "embedding queue full", doc.Timestamp, doc.Hash)
-	}
+	_ = s.enqueueEmbeddingJob(job)
 }
 
 func (s *Service) enqueuePendingEmbeddings(ctx context.Context) error {
@@ -438,6 +427,8 @@ func (s *Service) enqueueEmbeddingDocuments(ctx context.Context, documents []ind
 }
 
 func (s *Service) runEmbeddingWorker() {
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
 	for {
 		select {
 		case job, ok := <-s.embedQueue:
@@ -445,9 +436,35 @@ func (s *Service) runEmbeddingWorker() {
 				return
 			}
 			s.processEmbeddingJob(job)
+		case <-ticker.C:
+			docs, err := s.index.PendingEmbeddingDocuments(context.Background(), true)
+			if err != nil {
+				continue
+			}
+			for _, doc := range docs {
+				job := embeddingJob{
+					path:      doc.Path,
+					timestamp: doc.Timestamp,
+					hash:      doc.Hash,
+					chunks:    append([]index.Chunk(nil), doc.Chunks...),
+				}
+				_ = s.enqueueEmbeddingJob(job)
+			}
 		case <-s.shutdownCh:
 			return
 		}
+	}
+}
+
+func (s *Service) enqueueEmbeddingJob(job embeddingJob) error {
+	if s.embedQueue == nil {
+		return nil
+	}
+	select {
+	case s.embedQueue <- job:
+		return nil
+	default:
+		return fmt.Errorf("embedding queue full")
 	}
 }
 
