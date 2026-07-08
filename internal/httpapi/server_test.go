@@ -268,6 +268,102 @@ func TestInvalidCursorReturnsBadRequest(t *testing.T) {
 	}
 }
 
+func TestRESTRequestAccessRestrictsReadAndWrite(t *testing.T) {
+	svc := newHTTPTestService(t, config.Default())
+	handler := NewServer(svc, config.Default())
+
+	emptyAccess := doJSON(t, handler, http.MethodPost, "/concepts", map[string]any{
+		"path":    "public/empty.md",
+		"content": "---\ntype: Note\ntitle: Empty\n---\nA\n",
+		"access":  map[string]any{},
+	}, "")
+	if emptyAccess.Code != http.StatusForbidden {
+		t.Fatalf("empty access status = %d body=%s", emptyAccess.Code, emptyAccess.Body.String())
+	}
+	denied := doJSON(t, handler, http.MethodPost, "/concepts", map[string]any{
+		"path":    "private/a.md",
+		"content": "---\ntype: Note\ntitle: A\n---\nA\n",
+		"access":  map[string]any{"write_globs": []string{"public/**"}},
+	}, "")
+	if denied.Code != http.StatusForbidden {
+		t.Fatalf("denied write status = %d body=%s", denied.Code, denied.Body.String())
+	}
+	created := doJSON(t, handler, http.MethodPost, "/concepts", map[string]any{
+		"path":    "public/a.md",
+		"content": "---\ntype: Note\ntitle: A\n---\nneedle\n",
+		"access":  map[string]any{"write_globs": []string{"public/**"}},
+	}, "")
+	if created.Code != http.StatusCreated {
+		t.Fatalf("created status = %d body=%s", created.Code, created.Body.String())
+	}
+	readDenied := doJSON(t, handler, http.MethodGet, "/concepts/public/a.md?read_glob=private/**", nil, "")
+	if readDenied.Code != http.StatusForbidden {
+		t.Fatalf("read denied status = %d body=%s", readDenied.Code, readDenied.Body.String())
+	}
+	readAllowed := doJSON(t, handler, http.MethodGet, "/concepts/public/a.md?read_glob=public/**", nil, "")
+	if readAllowed.Code != http.StatusOK {
+		t.Fatalf("read allowed status = %d body=%s", readAllowed.Code, readAllowed.Body.String())
+	}
+}
+
+func TestRESTRequestAccessFiltersDiscoveryAndRejectsInvalidGlob(t *testing.T) {
+	svc := newHTTPTestService(t, config.Default())
+	handler := NewServer(svc, config.Default())
+	for _, path := range []string{"public/a.md", "private/a.md"} {
+		res := doJSON(t, handler, http.MethodPost, "/concepts", map[string]any{
+			"path":    path,
+			"content": "---\ntype: Note\ntitle: A\n---\nneedle\n",
+		}, "")
+		if res.Code != http.StatusCreated {
+			t.Fatalf("POST %s status=%d body=%s", path, res.Code, res.Body.String())
+		}
+	}
+	list := doJSON(t, handler, http.MethodGet, "/concepts?read_glob=public/**", nil, "")
+	if list.Code != http.StatusOK {
+		t.Fatalf("list status = %d body=%s", list.Code, list.Body.String())
+	}
+	var listPayload map[string]any
+	decodeBody(t, list, &listPayload)
+	documents := listPayload["documents"].([]any)
+	if len(documents) != 1 || jsonPath(t, documents[0]) != "public/a.md" {
+		t.Fatalf("documents = %#v", documents)
+	}
+	grep := doJSON(t, handler, http.MethodPost, "/grep", map[string]any{
+		"query":  "needle",
+		"access": map[string]any{"read_globs": []string{"public/**"}},
+	}, "")
+	if grep.Code != http.StatusOK {
+		t.Fatalf("grep status = %d body=%s", grep.Code, grep.Body.String())
+	}
+	var grepPayload map[string]any
+	decodeBody(t, grep, &grepPayload)
+	matches := grepPayload["matches"].([]any)
+	if len(matches) != 1 || jsonPath(t, matches[0]) != "public/a.md" {
+		t.Fatalf("matches = %#v", matches)
+	}
+	search := doJSON(t, handler, http.MethodPost, "/search", map[string]any{
+		"query":  "needle",
+		"access": map[string]any{"read_globs": []string{"public/**"}},
+	}, "")
+	if search.Code != http.StatusOK {
+		t.Fatalf("search status = %d body=%s", search.Code, search.Body.String())
+	}
+	var searchPayload map[string]any
+	decodeBody(t, search, &searchPayload)
+	hits := searchPayload["hits"].([]any)
+	if len(hits) != 1 || jsonPath(t, hits[0]) != "public/a.md" {
+		t.Fatalf("hits = %#v", hits)
+	}
+	bad := doJSON(t, handler, http.MethodGet, "/concepts?read_glob=../bad/**", nil, "")
+	if bad.Code != http.StatusBadRequest {
+		t.Fatalf("bad glob status = %d body=%s", bad.Code, bad.Body.String())
+	}
+	logDenied := doJSON(t, handler, http.MethodGet, "/log?read_glob=public/**", nil, "")
+	if logDenied.Code != http.StatusForbidden {
+		t.Fatalf("log denied status = %d body=%s", logDenied.Code, logDenied.Body.String())
+	}
+}
+
 func TestHTTPErrorMapping(t *testing.T) {
 	svc := newHTTPTestService(t, config.Default())
 	handler := NewServer(svc, config.Default())
@@ -300,6 +396,21 @@ func TestHTTPErrorMapping(t *testing.T) {
 	if badPath.Code != http.StatusBadRequest {
 		t.Fatalf("bad path status = %d body=%s", badPath.Code, badPath.Body.String())
 	}
+}
+
+func jsonPath(t *testing.T, item any) string {
+	t.Helper()
+	object, ok := item.(map[string]any)
+	if !ok {
+		t.Fatalf("item is %T, want object: %#v", item, item)
+	}
+	for _, key := range []string{"path", "Path"} {
+		if value, ok := object[key].(string); ok {
+			return value
+		}
+	}
+	t.Fatalf("missing path field in %#v", object)
+	return ""
 }
 
 func newHTTPTestService(t *testing.T, cfg config.Config) *service.Service {

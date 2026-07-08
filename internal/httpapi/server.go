@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/ematvey/kvt/internal/access"
 	"github.com/ematvey/kvt/internal/config"
 	"github.com/ematvey/kvt/internal/gitops"
 	"github.com/ematvey/kvt/internal/index"
@@ -113,10 +114,15 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	if !decodeRequest(w, r, &req) {
 		return
 	}
+	policy, err := policyFromBody(req.Access)
+	if writePolicyError(w, err) {
+		return
+	}
 	resp, err := s.svc.Search(r.Context(), service.SearchRequest{
 		Query:      req.Query,
 		PathPrefix: req.PathPrefix,
 		Limit:      req.Limit,
+		Access:     policy,
 	})
 	if err != nil {
 		writeServiceError(w, err)
@@ -136,11 +142,16 @@ func (s *Server) handleGrep(w http.ResponseWriter, r *http.Request) {
 	if !decodeRequest(w, r, &req) {
 		return
 	}
-	resp, err := s.svc.Grep(r.Context(), index.GrepRequest{
+	policy, err := policyFromBody(req.Access)
+	if writePolicyError(w, err) {
+		return
+	}
+	resp, err := s.svc.Grep(r.Context(), service.GrepRequest{
 		Query:      req.Query,
 		PathPrefix: req.PathPrefix,
 		Limit:      req.Limit,
 		Cursor:     req.Cursor,
+		Access:     policy,
 	})
 	if err != nil {
 		writeServiceError(w, err)
@@ -157,13 +168,18 @@ func (s *Server) handleGrep(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleConcepts(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
-		resp, err := s.svc.List(r.Context(), index.ListRequest{
+		policy, err := policyFromQuery(r)
+		if writePolicyError(w, err) {
+			return
+		}
+		resp, err := s.svc.List(r.Context(), service.ListRequest{
 			Type:       r.URL.Query().Get("type"),
 			PathPrefix: r.URL.Query().Get("path_prefix"),
 			FieldKey:   r.URL.Query().Get("field_key"),
 			FieldValue: r.URL.Query().Get("field_value"),
 			Limit:      intQuery(r, "limit"),
 			Cursor:     r.URL.Query().Get("cursor"),
+			Access:     policy,
 		})
 		if err != nil {
 			writeServiceError(w, err)
@@ -180,12 +196,17 @@ func (s *Server) handleConcepts(w http.ResponseWriter, r *http.Request) {
 		if !decodeRequest(w, r, &req) {
 			return
 		}
+		policy, err := policyFromBody(req.Access)
+		if writePolicyError(w, err) {
+			return
+		}
 		resp, err := s.svc.Write(r.Context(), service.WriteRequest{
 			Path:           req.Path,
 			Content:        req.Content,
 			BaseHash:       req.BaseHash,
 			Agent:          req.Agent,
 			ValidationMode: validationMode(req.ValidationMode),
+			Access:         policy,
 		})
 		if err != nil {
 			writeServiceError(w, err)
@@ -205,10 +226,15 @@ func (s *Server) handleConceptPath(w http.ResponseWriter, r *http.Request) {
 		if !ok {
 			return
 		}
+		policy, err := policyFromQuery(r)
+		if writePolicyError(w, err) {
+			return
+		}
 		resp, err := s.svc.Read(r.Context(), service.ReadRequest{
 			Path:      path,
 			StartLine: startLine,
 			EndLine:   endLine,
+			Access:    policy,
 		})
 		if err != nil {
 			writeServiceError(w, err)
@@ -220,6 +246,10 @@ func (s *Server) handleConceptPath(w http.ResponseWriter, r *http.Request) {
 		if !decodeRequest(w, r, &req) {
 			return
 		}
+		policy, err := policyFromBody(req.Access)
+		if writePolicyError(w, err) {
+			return
+		}
 		resp, err := s.svc.Edit(r.Context(), service.EditRequest{
 			Path:           path,
 			BaseHash:       req.BaseHash,
@@ -228,6 +258,7 @@ func (s *Server) handleConceptPath(w http.ResponseWriter, r *http.Request) {
 			ReplaceAll:     req.ReplaceAll,
 			Agent:          req.Agent,
 			ValidationMode: validationMode(req.ValidationMode),
+			Access:         policy,
 		})
 		if err != nil {
 			writeServiceError(w, err)
@@ -239,10 +270,15 @@ func (s *Server) handleConceptPath(w http.ResponseWriter, r *http.Request) {
 		if !decodeRequest(w, r, &req) {
 			return
 		}
+		policy, err := policyFromBody(req.Access)
+		if writePolicyError(w, err) {
+			return
+		}
 		resp, err := s.svc.Delete(r.Context(), service.DeleteRequest{
 			Path:     path,
 			BaseHash: req.BaseHash,
 			Agent:    req.Agent,
+			Access:   policy,
 		})
 		if err != nil {
 			writeServiceError(w, err)
@@ -263,10 +299,15 @@ func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	path := strings.TrimPrefix(r.URL.Path, "/history/")
+	policy, err := policyFromQuery(r)
+	if writePolicyError(w, err) {
+		return
+	}
 	resp, err := s.svc.History(r.Context(), service.HistoryRequest{
 		Path:   path,
 		Cursor: r.URL.Query().Get("cursor"),
 		Limit:  intQuery(r, "limit"),
+		Access: policy,
 	})
 	if err != nil {
 		writeServiceError(w, err)
@@ -284,9 +325,14 @@ func (s *Server) handleLog(w http.ResponseWriter, r *http.Request) {
 	if !requireMethod(w, r, http.MethodGet) {
 		return
 	}
+	policy, err := policyFromQuery(r)
+	if writePolicyError(w, err) {
+		return
+	}
 	resp, err := s.svc.Log(r.Context(), service.LogRequest{
 		Cursor: r.URL.Query().Get("cursor"),
 		Limit:  intQuery(r, "limit"),
+		Access: policy,
 	})
 	if err != nil {
 		writeServiceError(w, err)
@@ -353,32 +399,42 @@ func (s *Server) handlePush(w http.ResponseWriter, r *http.Request) {
 }
 
 type writeRequest struct {
-	Path           string `json:"path"`
-	Content        string `json:"content"`
-	BaseHash       string `json:"base_hash"`
-	Agent          string `json:"agent"`
-	ValidationMode string `json:"validation_mode"`
+	Path           string         `json:"path"`
+	Content        string         `json:"content"`
+	BaseHash       string         `json:"base_hash"`
+	Agent          string         `json:"agent"`
+	ValidationMode string         `json:"validation_mode"`
+	Access         *accessRequest `json:"access"`
 }
 
 type editRequest struct {
-	BaseHash       string `json:"base_hash"`
-	OldString      string `json:"old_string"`
-	NewString      string `json:"new_string"`
-	ReplaceAll     bool   `json:"replace_all"`
-	Agent          string `json:"agent"`
-	ValidationMode string `json:"validation_mode"`
+	BaseHash       string         `json:"base_hash"`
+	OldString      string         `json:"old_string"`
+	NewString      string         `json:"new_string"`
+	ReplaceAll     bool           `json:"replace_all"`
+	Agent          string         `json:"agent"`
+	ValidationMode string         `json:"validation_mode"`
+	Access         *accessRequest `json:"access"`
 }
 
 type deleteRequest struct {
-	BaseHash string `json:"base_hash"`
-	Agent    string `json:"agent"`
+	BaseHash string         `json:"base_hash"`
+	Agent    string         `json:"agent"`
+	Access   *accessRequest `json:"access"`
 }
 
 type searchRequest struct {
-	Query      string `json:"query"`
-	PathPrefix string `json:"path_prefix"`
-	Limit      int    `json:"limit"`
-	Cursor     string `json:"cursor"`
+	Query      string         `json:"query"`
+	PathPrefix string         `json:"path_prefix"`
+	Limit      int            `json:"limit"`
+	Cursor     string         `json:"cursor"`
+	Access     *accessRequest `json:"access"`
+}
+
+type accessRequest struct {
+	ReadGlobs  []string `json:"read_globs"`
+	WriteGlobs []string `json:"write_globs"`
+	DenyGlobs  []string `json:"deny_globs"`
 }
 
 type validateRequest struct {
@@ -413,6 +469,29 @@ func decodeRequest(w http.ResponseWriter, r *http.Request, out any) bool {
 	return true
 }
 
+func policyFromBody(in *accessRequest) (*access.Policy, error) {
+	if in == nil {
+		return nil, nil
+	}
+	return access.New(in.ReadGlobs, in.WriteGlobs, in.DenyGlobs)
+}
+
+func policyFromQuery(r *http.Request) (*access.Policy, error) {
+	query := r.URL.Query()
+	if len(query["read_glob"]) == 0 && len(query["write_glob"]) == 0 && len(query["deny_glob"]) == 0 {
+		return nil, nil
+	}
+	return access.New(query["read_glob"], query["write_glob"], query["deny_glob"])
+}
+
+func writePolicyError(w http.ResponseWriter, err error) bool {
+	if err == nil {
+		return false
+	}
+	writeError(w, http.StatusBadRequest, err.Error(), nil)
+	return true
+}
+
 func writeJSON(w http.ResponseWriter, status int, payload any) {
 	data, err := json.Marshal(payload)
 	if err != nil {
@@ -425,6 +504,10 @@ func writeJSON(w http.ResponseWriter, status int, payload any) {
 }
 
 func writeServiceError(w http.ResponseWriter, err error) {
+	if access.IsDenied(err) {
+		writeError(w, http.StatusForbidden, err.Error(), nil)
+		return
+	}
 	var conflict *service.ConflictError
 	if errors.As(err, &conflict) {
 		writeError(w, http.StatusConflict, err.Error(), map[string]any{
