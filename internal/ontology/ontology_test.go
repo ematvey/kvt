@@ -65,10 +65,14 @@ func TestValidateRequiredEnumPatternAndRef(t *testing.T) {
 	}}
 	p, _ := pathutil.Normalize("incidents/db-down.md")
 	result := ValidateDocument(schema, p, doc, Strict)
-	if len(result.Errors) != 4 {
+	// With case-insensitive paths, "Systems/DB.md" normalizes to "systems/db.md"
+	// successfully, so there are 3 errors (title, severity, ticket) instead of 4.
+	// affects ref validation still catches type mismatch via validateDocumentRefs
+	// at the service layer.
+	if len(result.Errors) != 3 {
 		t.Fatalf("errors = %#v", result.Errors)
 	}
-	assertIssueFields(t, result.Errors, "title", "severity", "ticket", "affects")
+	assertIssueFields(t, result.Errors, "title", "severity", "ticket")
 }
 
 func TestValidatePathRulesAndAdvisoryMode(t *testing.T) {
@@ -153,7 +157,9 @@ func TestValidateVaultReportsMalformedBodyLinks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ValidateVault: %v", err)
 	}
-	if len(report.Errors) != 2 {
+	// With case-insensitive paths, "../Systems/DB.md" resolves to "systems/db.md"
+	// which exists, so only foo//bar.md remains as a broken link.
+	if len(report.Errors) != 1 {
 		t.Fatalf("errors = %#v", report.Errors)
 	}
 	assertIssueFields(t, report.Errors, "body")

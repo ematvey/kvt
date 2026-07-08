@@ -32,11 +32,14 @@ func (e *Error) Error() string {
 }
 
 func Normalize(raw string) (Path, error) {
+	clean := strings.TrimSpace(raw)
+	clean = strings.ReplaceAll(clean, "\\", "/")
+	clean = strings.ToLower(clean)
 	suggestion := Suggest(raw)
-	if err := validate(raw); err != nil {
+	if err := validate(clean); err != nil {
 		return "", &Error{Raw: raw, Suggestion: suggestion, Reason: err.Error()}
 	}
-	return Path(raw), nil
+	return Path(clean), nil
 }
 
 func Suggest(raw string) string {
@@ -57,6 +60,12 @@ func Suggest(raw string) string {
 		cleaned = append(cleaned, part)
 	}
 	return strings.Join(cleaned, "/")
+}
+
+// StoragePath lowercases a path for filesystem storage.
+// Accepts any-case input, returns lowercase.
+func StoragePath(raw string) string {
+	return strings.ToLower(raw)
 }
 
 func IsConceptMarkdownPath(rel string) bool {
@@ -113,9 +122,6 @@ func validate(raw string) error {
 	for _, part := range parts {
 		if part == "" {
 			return fmt.Errorf("path has empty segment")
-		}
-		if part != strings.ToLower(part) {
-			return fmt.Errorf("path must be lowercase")
 		}
 		if !segmentPattern.MatchString(part) {
 			return fmt.Errorf("segment %q is not allowed", part)
