@@ -54,7 +54,7 @@ func (db *DB) reconcile(ctx context.Context, root string, force bool) (Reconcile
 			return err
 		}
 		if entry.IsDir() {
-			if entry.Name() == ".git" || entry.Name() == ".kvt" {
+			if strings.HasPrefix(entry.Name(), ".") {
 				return filepath.SkipDir
 			}
 			return nil

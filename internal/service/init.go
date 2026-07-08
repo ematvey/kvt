@@ -249,7 +249,7 @@ func existingMarkdownPaths(root string) ([]pathutil.Path, error) {
 			return err
 		}
 		if d.IsDir() {
-			if d.Name() == ".git" || d.Name() == ".kvt" {
+			if strings.HasPrefix(d.Name(), ".") {
 				return filepath.SkipDir
 			}
 			if filePath != root {
