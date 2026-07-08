@@ -117,8 +117,14 @@ func Load(vaultPath string, explicitPath string) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	from := ""
+	if explicitPath != "" {
+		from = explicitPath
+	} else {
+		from = filepath.Join(vaultPath, ".kvt", "config.yaml")
+	}
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
-		return Config{}, fmt.Errorf("parse config %s: %w", path, err)
+		return Config{}, fmt.Errorf("parse config %s: %w", from, err)
 	}
 	return cfg, nil
 }

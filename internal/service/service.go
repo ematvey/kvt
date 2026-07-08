@@ -161,12 +161,48 @@ func normalizeConceptPath(raw string, indexMode config.IndexMode) (pathutil.Path
 	return normalized, nil
 }
 
+// resolveCaseInsensitive walks the path segments case-insensitively to find the
+// actual filesystem path. Returns the resolved path or the original if not found.
+func resolveCaseInsensitive(root string, docPath pathutil.Path) pathutil.Path {
+	full := filepath.Join(root, filepath.FromSlash(docPath.String()))
+	if _, err := os.Stat(full); err == nil {
+		return docPath
+	}
+	// Walk each segment case-insensitively
+	segments := strings.Split(filepath.ToSlash(docPath.String()), "/")
+	currentPath := root
+	var resolvedSegments []string
+	for _, seg := range segments {
+		entries, err := os.ReadDir(currentPath)
+		if err != nil {
+			return docPath // can't walk, give up
+		}
+		segLower := strings.ToLower(seg)
+		found := false
+		for _, entry := range entries {
+			if strings.ToLower(entry.Name()) == segLower {
+				resolvedSegments = append(resolvedSegments, entry.Name())
+				currentPath = filepath.Join(currentPath, entry.Name())
+				found = true
+				break
+			}
+		}
+		if !found {
+			return docPath // segment not found, give up
+		}
+	}
+	return pathutil.Path(strings.Join(resolvedSegments, "/"))
+}
+
 func (s *Service) fullPath(docPath pathutil.Path) string {
 	return filepath.Join(s.root, filepath.FromSlash(docPath.String()))
 }
 
 func (s *Service) readState(docPath pathutil.Path) (conceptState, error) {
-	content, err := os.ReadFile(s.fullPath(docPath))
+	// Case-insensitive resolution: if the exact path doesn't exist,
+	// try the parent directory for a case-insensitive file name match.
+	resolved := resolveCaseInsensitive(s.root, docPath)
+	content, err := os.ReadFile(s.fullPath(resolved))
 	if err != nil {
 		return conceptState{}, err
 	}

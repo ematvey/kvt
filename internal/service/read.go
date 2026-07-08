@@ -25,9 +25,11 @@ func (s *Service) Read(ctx context.Context, req ReadRequest) (ReadResponse, erro
 	if err != nil {
 		return ReadResponse{}, err
 	}
-	doc, err := frontmatter.Parse(state.content)
-	if err != nil {
-		return ReadResponse{}, err
+	doc, parseErr := frontmatter.Parse(state.content)
+	if parseErr != nil {
+		// Serve files with unparseable frontmatter as body-only — agent reads,
+		// sees the raw content, and can fix it.
+		doc = frontmatter.Document{Body: state.content}
 	}
 	backlinks, err := s.index.Backlinks(ctx, docPath.String())
 	if err != nil {
@@ -52,6 +54,13 @@ func (s *Service) Read(ctx context.Context, req ReadRequest) (ReadResponse, erro
 		return ReadResponse{}, err
 	}
 	validation.Warnings = append(validation.Warnings, refValidation.Warnings...)
+	if parseErr != nil {
+		validation.Warnings = append(validation.Warnings, ontology.Issue{
+			Path:    docPath,
+			Field:   "frontmatter",
+			Message: fmt.Sprintf("unparseable YAML frontmatter: %v", parseErr),
+		})
+	}
 	content := string(state.content)
 	if req.StartLine > 0 || req.EndLine > 0 {
 		content, err = lineRange(content, req.StartLine, req.EndLine)

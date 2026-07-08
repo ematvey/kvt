@@ -67,7 +67,7 @@ func (db *DB) reconcile(ctx context.Context, root string, force bool) (Reconcile
 			return err
 		}
 		rel = filepath.ToSlash(rel)
-		if !pathutil.IsConceptMarkdownPath(rel) {
+		if !pathutil.IsConceptMarkdownPathWithIndex(rel, true) {
 			return nil
 		}
 		normalized, err := pathutil.Normalize(rel)
@@ -85,7 +85,8 @@ func (db *DB) reconcile(ctx context.Context, root string, force bool) (Reconcile
 		}
 		doc, err := frontmatter.Parse(data)
 		if err != nil {
-			return err
+			// Treat files with unparseable frontmatter as body-only documents
+			doc = frontmatter.Document{Body: data}
 		}
 		indexed := BuildIndexedDocument(schema, normalized, doc, docHash)
 		if err := db.ApplyDocument(ctx, indexed); err != nil {
