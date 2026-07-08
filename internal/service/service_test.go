@@ -975,6 +975,36 @@ func openTempDBForServiceTest(t *testing.T) *index.DB {
 	return db
 }
 
+func TestServiceCloseCleansUpGoroutines(t *testing.T) {
+	testutil.RequireGit(t)
+	h := newServiceHarness(t)
+
+	doc := index.IndexedDocument{
+		Path:        "test/shutdown.md",
+		Hash:        "h1",
+		Title:       "Shutdown",
+		Type:        "Note",
+		Description: "",
+		Timestamp:   "2026-07-08T12:00:00Z",
+		Chunks:      []index.Chunk{{Ordinal: 0, Text: "test", EmbedText: "test"}},
+	}
+	if err := h.service.writeIndexDoc(t.Context(), doc); err != nil {
+		t.Fatalf("writeIndexDoc: %v", err)
+	}
+
+	if err := h.service.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	svc2, err := New(h.service.Root(), h.service.Config(), Deps{})
+	if err != nil {
+		t.Fatalf("New after close: %v", err)
+	}
+	if err := svc2.Close(); err != nil {
+		t.Fatalf("Close svc2: %v", err)
+	}
+}
+
 func newServiceHarness(t *testing.T) serviceHarness {
 	t.Helper()
 	root := t.TempDir()

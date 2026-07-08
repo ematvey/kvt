@@ -48,6 +48,7 @@ type Service struct {
 	commitsAhead          int
 	lastTimestamp         time.Time
 	embedQueue            chan embeddingJob
+	shutdownCh            chan struct{}
 }
 
 type conceptState struct {
@@ -133,7 +134,20 @@ func New(root string, cfg config.Config, deps Deps) (*Service, error) {
 			_ = svc.enqueuePendingEmbeddings(context.Background())
 		}()
 	}
+	svc.shutdownCh = make(chan struct{})
 	return svc, nil
+}
+
+// Root returns the vault root path.
+func (s *Service) Root() string { return s.root }
+
+// Config returns a copy of the service config.
+func (s *Service) Config() config.Config { return s.cfg }
+
+// writeIndexDoc applies a document directly to the index (bypasses git commit).
+// Used only by tests to set up index state for shutdown/embedding tests.
+func (s *Service) writeIndexDoc(ctx context.Context, doc index.IndexedDocument) error {
+	return s.index.ApplyDocument(ctx, doc)
 }
 
 func normalizeConceptPath(raw string) (pathutil.Path, error) {
@@ -424,64 +438,91 @@ func (s *Service) enqueueEmbeddingDocuments(ctx context.Context, documents []ind
 }
 
 func (s *Service) runEmbeddingWorker() {
-	for job := range s.embedQueue {
-		texts := make([]string, 0, len(job.chunks))
-		ordinals := make([]int, 0, len(job.chunks))
-		for _, chunk := range job.chunks {
-			text := strings.TrimSpace(chunk.EmbedText)
-			if text == "" {
-				text = strings.TrimSpace(chunk.Text)
+	for {
+		select {
+		case job, ok := <-s.embedQueue:
+			if !ok {
+				return
 			}
-			if text == "" {
-				_ = s.index.MarkEmbeddingState(context.Background(), job.path, "failed", "empty chunk text", job.timestamp, job.hash)
-				break
-			}
-			texts = append(texts, text)
-			ordinals = append(ordinals, chunk.Ordinal)
+			s.processEmbeddingJob(job)
+		case <-s.shutdownCh:
+			return
 		}
-		if len(texts) != len(job.chunks) {
-			if len(texts) != 0 {
-				_ = s.index.MarkEmbeddingState(context.Background(), job.path, "failed", "embedding job has empty chunk text", job.timestamp, job.hash)
-			}
-			continue
-		}
-		if len(texts) == 0 {
-			_ = s.index.MarkEmbeddingState(context.Background(), job.path, "failed", "embedding job has no chunks", job.timestamp, job.hash)
-			continue
-		}
-		vectors, err := s.embedWithRetries(context.Background(), texts)
-		if err != nil {
-			_ = s.index.MarkEmbeddingState(context.Background(), job.path, "failed", err.Error(), job.timestamp, job.hash)
-			continue
-		}
-		if len(vectors) != len(texts) {
-			_ = s.index.MarkEmbeddingState(
-				context.Background(),
-				job.path,
-				"failed",
-				fmt.Sprintf("embedding response count mismatch: got %d vectors for %d chunks", len(vectors), len(texts)),
-				job.timestamp,
-				job.hash,
-			)
-			continue
-		}
-		payload := make([]index.ChunkEmbedding, 0, len(vectors))
-		for i, vector := range vectors {
-			payload = append(payload, index.ChunkEmbedding{
-				Ordinal:   ordinals[i],
-				Vector:    vector,
-				UpdatedAt: job.timestamp,
-				Hash:      job.hash,
-			})
-		}
-		if err := s.index.UpsertEmbeddings(context.Background(), job.path, payload); err != nil {
-			if !errors.Is(err, index.ErrStaleEmbedding) {
-				_ = s.index.MarkEmbeddingState(context.Background(), job.path, "failed", err.Error(), job.timestamp, job.hash)
-			}
-			continue
-		}
-		_ = s.index.MarkEmbeddingState(context.Background(), job.path, "ready", "", job.timestamp, job.hash)
 	}
+}
+
+func (s *Service) processEmbeddingJob(job embeddingJob) {
+	texts := make([]string, 0, len(job.chunks))
+	ordinals := make([]int, 0, len(job.chunks))
+	for _, chunk := range job.chunks {
+		text := strings.TrimSpace(chunk.EmbedText)
+		if text == "" {
+			text = strings.TrimSpace(chunk.Text)
+		}
+		if text == "" {
+			_ = s.index.MarkEmbeddingState(context.Background(), job.path, "failed", "empty chunk text", job.timestamp, job.hash)
+			break
+		}
+		texts = append(texts, text)
+		ordinals = append(ordinals, chunk.Ordinal)
+	}
+	if len(texts) != len(job.chunks) {
+		if len(texts) != 0 {
+			_ = s.index.MarkEmbeddingState(context.Background(), job.path, "failed", "embedding job has empty chunk text", job.timestamp, job.hash)
+		}
+		return
+	}
+	if len(texts) == 0 {
+		_ = s.index.MarkEmbeddingState(context.Background(), job.path, "failed", "embedding job has no chunks", job.timestamp, job.hash)
+		return
+	}
+	vectors, err := s.embedWithRetries(context.Background(), texts)
+	if err != nil {
+		_ = s.index.MarkEmbeddingState(context.Background(), job.path, "failed", err.Error(), job.timestamp, job.hash)
+		return
+	}
+	if len(vectors) != len(texts) {
+		_ = s.index.MarkEmbeddingState(
+			context.Background(),
+			job.path,
+			"failed",
+			fmt.Sprintf("embedding response count mismatch: got %d vectors for %d chunks", len(vectors), len(texts)),
+			job.timestamp,
+			job.hash,
+		)
+		return
+	}
+	payload := make([]index.ChunkEmbedding, 0, len(vectors))
+	for i, vector := range vectors {
+		payload = append(payload, index.ChunkEmbedding{
+			Ordinal:   ordinals[i],
+			Vector:    vector,
+			UpdatedAt: job.timestamp,
+			Hash:      job.hash,
+		})
+	}
+	if err := s.index.UpsertEmbeddings(context.Background(), job.path, payload); err != nil {
+		if !errors.Is(err, index.ErrStaleEmbedding) {
+			_ = s.index.MarkEmbeddingState(context.Background(), job.path, "failed", err.Error(), job.timestamp, job.hash)
+		}
+		return
+	}
+	_ = s.index.MarkEmbeddingState(context.Background(), job.path, "ready", "", job.timestamp, job.hash)
+}
+
+// Close shuts down the service: signals the embedding worker to stop,
+// stops the push timer, and closes the SQLite index database.
+func (s *Service) Close() error {
+	close(s.shutdownCh)
+
+	s.pushMu.Lock()
+	if s.pushTimer != nil {
+		s.pushTimer.Stop()
+		s.pushTimer = nil
+	}
+	s.pushMu.Unlock()
+
+	return s.index.Close()
 }
 
 func (s *Service) embedWithRetries(ctx context.Context, texts []string) ([][]float32, error) {
