@@ -91,7 +91,7 @@ func (s *Service) History(ctx context.Context, req HistoryRequest) (gitops.Histo
 	if err := ctx.Err(); err != nil {
 		return gitops.HistoryPage{}, err
 	}
-	docPath, err := normalizeConceptPath(req.Path)
+	docPath, err := normalizeConceptPath(req.Path, s.cfg.Server.IndexMode)
 	if err != nil {
 		return gitops.HistoryPage{}, err
 	}

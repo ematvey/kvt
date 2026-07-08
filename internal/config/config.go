@@ -49,9 +49,17 @@ type GitConfig struct {
 	AuthorEmail      string `yaml:"author_email,omitempty"`
 }
 
+type IndexMode string
+
+const (
+	IndexModeAuto   IndexMode = "auto"
+	IndexModeManual IndexMode = "manual"
+)
+
 type ServerConfig struct {
-	HTTPPort     int    `yaml:"http_port,omitempty"`
-	MCPTransport string `yaml:"mcp_transport,omitempty"`
+	HTTPPort     int       `yaml:"http_port,omitempty"`
+	MCPTransport string    `yaml:"mcp_transport,omitempty"`
+	IndexMode    IndexMode `yaml:"index_mode,omitempty"`
 }
 
 type AuthConfig struct {
@@ -82,6 +90,7 @@ func Default() Config {
 		Server: ServerConfig{
 			HTTPPort:     8200,
 			MCPTransport: "stdio",
+			IndexMode:    IndexModeAuto,
 		},
 		Auth: AuthConfig{
 			APIKeys: []string{},

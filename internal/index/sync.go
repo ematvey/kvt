@@ -3,7 +3,6 @@ package index
 import (
 	"context"
 	"database/sql"
-	"path"
 )
 
 func (db *DB) ApplyDocument(ctx context.Context, doc IndexedDocument) error {
@@ -12,9 +11,6 @@ func (db *DB) ApplyDocument(ctx context.Context, doc IndexedDocument) error {
 	}
 	if err := required(doc.Path, "path"); err != nil {
 		return err
-	}
-	if path.Base(doc.Path) == "index.md" {
-		return nil
 	}
 
 	tx, err := db.sql.BeginTx(ctx, nil)

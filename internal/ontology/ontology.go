@@ -186,7 +186,7 @@ func ValidateVault(root string, schema Schema) (ValidationReport, error) {
 			return err
 		}
 		rel = filepath.ToSlash(rel)
-		if !pathutil.IsConceptMarkdownPath(rel) {
+		if !pathutil.IsConceptMarkdownPathWithIndex(rel, true) {
 			return nil
 		}
 		docPath, err := pathutil.Normalize(rel)

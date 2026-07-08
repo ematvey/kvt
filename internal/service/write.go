@@ -14,7 +14,7 @@ func (s *Service) Write(ctx context.Context, req WriteRequest) (WriteResponse, e
 	if err := ctx.Err(); err != nil {
 		return WriteResponse{}, err
 	}
-	docPath, err := normalizeConceptPath(req.Path)
+	docPath, err := normalizeConceptPath(req.Path, s.cfg.Server.IndexMode)
 	if err != nil {
 		return WriteResponse{}, err
 	}
@@ -45,7 +45,7 @@ func (s *Service) Write(ctx context.Context, req WriteRequest) (WriteResponse, e
 	}
 
 	changedPaths := []string{docPath.String()}
-	indexPaths, err := regenerateIndexes(s.root, docPath)
+	indexPaths, err := regenerateIndexes(s.root, docPath, s.cfg.Server.IndexMode)
 	if err != nil {
 		return WriteResponse{}, err
 	}
@@ -77,7 +77,7 @@ func (s *Service) Edit(ctx context.Context, req EditRequest) (WriteResponse, err
 	if err := ctx.Err(); err != nil {
 		return WriteResponse{}, err
 	}
-	docPath, err := normalizeConceptPath(req.Path)
+	docPath, err := normalizeConceptPath(req.Path, s.cfg.Server.IndexMode)
 	if err != nil {
 		return WriteResponse{}, err
 	}
@@ -129,7 +129,7 @@ func (s *Service) Edit(ctx context.Context, req EditRequest) (WriteResponse, err
 	}
 
 	changedPaths := []string{docPath.String()}
-	indexPaths, err := regenerateIndexes(s.root, docPath)
+	indexPaths, err := regenerateIndexes(s.root, docPath, s.cfg.Server.IndexMode)
 	if err != nil {
 		return WriteResponse{}, err
 	}
@@ -161,7 +161,7 @@ func (s *Service) Delete(ctx context.Context, req DeleteRequest) (DeleteResponse
 	if err := ctx.Err(); err != nil {
 		return DeleteResponse{}, err
 	}
-	docPath, err := normalizeConceptPath(req.Path)
+	docPath, err := normalizeConceptPath(req.Path, s.cfg.Server.IndexMode)
 	if err != nil {
 		return DeleteResponse{}, err
 	}
@@ -184,7 +184,7 @@ func (s *Service) Delete(ctx context.Context, req DeleteRequest) (DeleteResponse
 	}
 
 	changedPaths := []string{docPath.String()}
-	indexPaths, err := regenerateIndexes(s.root, docPath)
+	indexPaths, err := regenerateIndexes(s.root, docPath, s.cfg.Server.IndexMode)
 	if err != nil {
 		return DeleteResponse{}, err
 	}

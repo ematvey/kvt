@@ -75,6 +75,24 @@ func IsConceptMarkdownPath(rel string) bool {
 	return rel != HouseHowtoPath
 }
 
+// IsConceptMarkdownPathWithIndex is like IsConceptMarkdownPath but allows
+// index.md as a concept document when allowIndex is true.
+func IsConceptMarkdownPathWithIndex(rel string, allowIndex bool) bool {
+	if allowIndex {
+		rel = strings.TrimSpace(strings.ReplaceAll(rel, "\\", "/"))
+		if rel == "" || rel == "." {
+			return false
+		}
+		rel = path.Clean(rel)
+		base := path.Base(rel)
+		if path.Ext(base) != ".md" {
+			return false
+		}
+		return rel != HouseHowtoPath
+	}
+	return IsConceptMarkdownPath(rel)
+}
+
 func validate(raw string) error {
 	if raw == "" {
 		return fmt.Errorf("path is empty")

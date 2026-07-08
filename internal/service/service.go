@@ -147,7 +147,7 @@ func (s *Service) writeIndexDoc(ctx context.Context, doc index.IndexedDocument) 
 	return s.index.ApplyDocument(ctx, doc)
 }
 
-func normalizeConceptPath(raw string) (pathutil.Path, error) {
+func normalizeConceptPath(raw string, indexMode config.IndexMode) (pathutil.Path, error) {
 	normalized, err := pathutil.Normalize(strings.TrimSpace(raw))
 	if err != nil {
 		return "", err
@@ -155,7 +155,7 @@ func normalizeConceptPath(raw string) (pathutil.Path, error) {
 	if filepath.Ext(normalized.String()) != ".md" {
 		return "", fmt.Errorf("path %q must point to a markdown concept", normalized.String())
 	}
-	if path.Base(normalized.String()) == "index.md" {
+	if indexMode != config.IndexModeManual && path.Base(normalized.String()) == "index.md" {
 		return "", fmt.Errorf("path %q is service-owned", normalized.String())
 	}
 	return normalized, nil

@@ -14,7 +14,7 @@ func (s *Service) Read(ctx context.Context, req ReadRequest) (ReadResponse, erro
 	if err := ctx.Err(); err != nil {
 		return ReadResponse{}, err
 	}
-	docPath, err := normalizeConceptPath(req.Path)
+	docPath, err := normalizeConceptPath(req.Path, s.cfg.Server.IndexMode)
 	if err != nil {
 		return ReadResponse{}, err
 	}

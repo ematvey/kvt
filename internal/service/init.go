@@ -226,7 +226,7 @@ func ensureIndexes(root string) ([]string, error) {
 
 	changedPaths := []string{}
 	for _, docPath := range paths {
-		writtenPaths, err := regenerateIndexes(root, docPath)
+		writtenPaths, err := regenerateIndexes(root, docPath, config.IndexModeAuto)
 		if err != nil {
 			return nil, err
 		}
@@ -235,7 +235,10 @@ func ensureIndexes(root string) ([]string, error) {
 	return changedPaths, nil
 }
 
-func regenerateIndexes(root string, docPath pathutil.Path) ([]string, error) {
+func regenerateIndexes(root string, docPath pathutil.Path, indexMode config.IndexMode) ([]string, error) {
+	if indexMode == config.IndexModeManual {
+		return nil, nil
+	}
 	return vault.RegenerateIndexes(root, docPath, 50, rootOKFVersion)
 }
 
